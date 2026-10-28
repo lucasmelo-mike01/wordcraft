@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 
 use craft_ui::panes::{Edge, PaneContent, PaneHost, PaneLabels, PaneRequest, PaneState, Place, SidePolicy};
-use egui::{Stroke, Ui, pos2, vec2};
+use egui::{Stroke, Ui, vec2};
 use serde_json::{Value, json};
 use wordcraft_doc::numbering::{Counters, LevelSuffix};
 use wordcraft_doc::section::NumFormat;
@@ -16,6 +16,50 @@ use wordcraft_engine::StylesPaneDock;
 
 use crate::WordApp;
 use crate::theme::{Tokens, regular, semibold};
+
+/// How the Navigation pane draws its outline. Both styles share the continuous trunks, the
+/// circular chevron nodes, the curved elbow and the selection pill; A leaves the inactive rows
+/// without elbows (Zed-style clean rail), B connects every child (Fleet/Craft Pro look).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NavTreeStyle {
+    /// Opção A: Zed / Linear — clean rail, the blue elbow only on the active branch.
+    #[default]
+    ZedLinear,
+    /// Opção B: Fleet / Craft Pro — every child connected, nested trunks ending on the last curve.
+    FleetConnected,
+}
+
+impl NavTreeStyle {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::ZedLinear => "zed_linear",
+            Self::FleetConnected => "fleet_connected",
+        }
+    }
+
+    pub fn from_code(code: &str) -> Option<Self> {
+        match code.trim().to_ascii_lowercase().as_str() {
+            "zed_linear" | "zed" | "a" => Some(Self::ZedLinear),
+            "fleet_connected" | "fleet" | "b" => Some(Self::FleetConnected),
+            _ => None,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ZedLinear => "Option A: Zed / Linear (clean rail + active curve)",
+            Self::FleetConnected => "Option B: Fleet / Craft Pro (all branches connected)",
+        }
+    }
+}
+
+/// `navTreeStyle` from `ui.json`: a missing or unknown value is the default (A), never an error,
+/// so an old or newer preferences file still loads.
+pub(crate) fn lenient_nav_tree_style<'de, D: serde::Deserializer<'de>>(d: D) -> Result<NavTreeStyle, D::Error> {
+    let v = <serde_json::Value as serde::Deserialize>::deserialize(d)?;
+    Ok(v.as_str().and_then(NavTreeStyle::from_code).unwrap_or_default())
+}
 
 /// The task panes, in their default order: each edge's first pane is outermost.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -275,6 +319,23 @@ impl PaneContent<Pane> for Content<'_> {
         tl!(pane.title()).into()
     }
 
+    /// App items above Move/Float/Close: the Navigation tree's style, so it can be switched
+    /// without leaving the document (§5.2).
+    fn menu(&mut self, ui: &mut Ui, pane: &Pane) {
+        if *pane != Pane::Navigation {
+            return;
+        }
+        let current = self.app.ui.nav_tree_style;
+        for style in [NavTreeStyle::ZedLinear, NavTreeStyle::FleetConnected] {
+            let mark = if current == style { "✓" } else { "  " };
+            let label = format!("{mark} {}", tl!(style.label()));
+            if ui.selectable_label(current == style, label).clicked() && current != style {
+                set_nav_tree_style(self.app, style);
+            }
+        }
+        ui.separator();
+    }
+
     fn body(&mut self, ui: &mut Ui, pane: &Pane) {
         let app = &mut *self.app;
         match pane {
@@ -477,13 +538,7 @@ fn nav(app: &mut WordApp, ui: &mut Ui) {
         }
     }
     ui.add_space(4.0);
-    ui.horizontal_wrapped(|ui| {
-        for (k, l) in [("headings", "Headings"), ("pages", "Pages"), ("results", "Results")] {
-            if ui.selectable_label(app.ui.nav_tab == k, tl!(l)).clicked() {
-                app.ui.nav_tab = k.into();
-            }
-        }
-    });
+    nav_tabs(ui, &mut app.ui.nav_tab);
     ui.separator();
     egui::ScrollArea::vertical().show(ui, |ui| match app.ui.nav_tab.as_str() {
         "pages" => {
@@ -535,6 +590,7 @@ fn nav(app: &mut WordApp, ui: &mut Ui) {
             let levels: Vec<u8> = items.iter().map(|(_, lv, _)| *lv).collect();
             let visible = visible_headings(&levels, &collapsed_flags);
             let chain = active_chain(&levels, &visible, current);
+            let tree_style = app.ui.nav_tree_style;
             let current_index = current;
             // The levels this heading nests under, for the tree's connector lines.
             let mut ancestors: Vec<u8> = Vec::new();
@@ -569,6 +625,7 @@ fn nav(app: &mut WordApp, ui: &mut Ui) {
                     last,
                     on_chain,
                     &active_guides,
+                    tree_style,
                 );
                 if toggle {
                     if !app.ui.nav_collapsed.remove(path) {
@@ -638,19 +695,166 @@ fn nav_headings(doc: &Document) -> Vec<(Path, u8, String)> {
     items
 }
 
-/// Distance one heading level is indented under its parent, points.
-const NAV_INDENT: f32 = 14.0;
+/// Modelo 2 — Curva Orgânica Fluida, options A and B, from the reference SVG's coordinates: the
+/// node of level 0 sits at x=18, a 16 px step per level (level 1 at 34, level 2 at 50), the badge
+/// of a parent 12 px after its node, a 14 px icon square and a 6 px gap after it. The elbow is a
+/// quadratic of radius 8 (the SVG's Q 18 96 26 96 L 30 96).
+const NAV_TRUNK_WIDTH: f32 = 1.3;
+const NAV_TRUNK_ACTIVE_WIDTH: f32 = 1.6;
+const NAV_ROW_HEIGHT: f32 = 26.0;
+/// From the right of the node slot (or the indent, for a leaf) to the keycap badge/label.
+const NAV_CONTENT_GAP: f32 = 6.0;
+/// The mockup's keycap badge: a 14 px square.
+const NAV_ICON_BOX: f32 = 14.0;
+/// The colour emoji's box: the SVG's emoji placeholders are 11–13 px, and 13 keeps the following
+/// text on the SVG's x=67 column (the title's own space after the emoji supplies the 6 px gap).
+const NAV_EMOJI_BOX: f32 = 13.0;
+/// The selection pill starts this far left of the content, where the active curve ends.
+const NAV_PILL_INSET: f32 = 2.0;
+/// The node column of level 0 and the step between levels (SVG: 18, 34, 50…).
+const NAV_NODE_X0: f32 = 18.0;
+const NAV_COLUMN_STEP: f32 = 16.0;
+/// A parent's badge sits this far after its node (SVG: node 34, badge 46).
+const NAV_PARENT_BADGE_DX: f32 = 12.0;
+/// Radius of the curved elbow in the reference SVG (8 px).
+const NAV_CURVE_RADIUS: f32 = 8.0;
+/// The pane body's own left padding (frame + scroll area): the SVG's coordinates start at the
+/// pane's edge, so the rows are drawn this much to the left to land on the same columns.
+const NAV_PANE_TRIM: f32 = 18.5;
 
-/// Modelo 2 — Curva Orgânica Fluida: the tree's connector lines are 25% thicker than the old
-/// single pixel, the active branch is drawn heavier (with a glow) and the elbow into a row is a
-/// quarter circle of this radius; a parent whose children branch off gets a small node there.
-const NAV_GUIDE_WIDTH: f32 = 1.25;
-const NAV_ACTIVE_WIDTH: f32 = 1.5;
-const NAV_ELBOW_RADIUS: f32 = 6.0;
-const NAV_NODE_RADIUS: f32 = 2.25;
-/// The fork slot before the triangle: the articulation node sits in its middle, and the trunk to
-/// the children leaves from there (so the node is visible, as ● ▾ in the Modelo 2 diagram).
-const NAV_FORK_SLOT: f32 = 8.0;
+/// Radius of a parent's circular chevron node (7 px at level 0, 6.5 px below, as the mockup).
+fn nav_node_radius(level: u8) -> f32 {
+    if level == 0 { 7.0 } else { 6.5 }
+}
+
+/// Radius of the curved elbow (the reference SVG's 8 px).
+fn nav_curve_radius(_level: u8) -> f32 {
+    NAV_CURVE_RADIUS
+}
+
+/// The X of the trunk (and of the node) of a level: 18, 34, 50…
+fn nav_node_x(level: u8) -> f32 {
+    NAV_NODE_X0 + level as f32 * NAV_COLUMN_STEP
+}
+
+/// The badge/icon column of a row: a parent's badge follows its node by 12; a leaf starts at its
+/// level's column.
+fn nav_content_x(level: u8) -> f32 {
+    nav_node_x(level) + NAV_PARENT_BADGE_DX
+}
+
+/// One trunk segment painted on a row.
+#[derive(Clone, Debug, PartialEq)]
+struct NavTrunk {
+    x: f32,
+    top: f32,
+    bottom: f32,
+    active: bool,
+}
+
+/// The curved elbow into the row: a quadratic Bézier from the trunk to the horizontal, then the
+/// straight part to the content.
+#[derive(Clone, Debug, PartialEq)]
+struct NavCurve {
+    start: egui::Pos2,
+    control: egui::Pos2,
+    end: egui::Pos2,
+    horizontal_end: f32,
+    active: bool,
+}
+
+/// A parent row's circular chevron node.
+#[derive(Clone, Debug, PartialEq)]
+struct NavNode {
+    centre: egui::Pos2,
+    radius: f32,
+    expanded: bool,
+    active: bool,
+}
+
+/// Everything one row paints, computed without a GPU so the geometry can be tested.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct NavGeometry {
+    content_x: f32,
+    pill: Option<egui::Rect>,
+    trunks: Vec<NavTrunk>,
+    curves: Vec<NavCurve>,
+    node: Option<NavNode>,
+}
+
+/// The geometry of one heading row (pure): trunks, the curved elbow, the chevron node and the
+/// selection pill. `style` decides whether an inactive leaf gets its own elbow (B) or not (A).
+#[allow(clippy::too_many_arguments)]
+fn nav_row_geometry(
+    row: egui::Rect,
+    level: u8,
+    guides: &[u8],
+    last: bool,
+    active: bool,
+    active_guides: &[u8],
+    style: NavTreeStyle,
+    collapsed: Option<bool>,
+    selected: bool,
+) -> NavGeometry {
+    let mid = row.center().y;
+    let left = row.left() - NAV_PANE_TRIM;
+    let radius = nav_node_radius(level);
+    let content_x = left + nav_content_x(level);
+    let mut g = NavGeometry { content_x, ..Default::default() };
+    if selected {
+        // SVG: pill x=48 for content x=50, height 24, right edge 13 px from the pane's.
+        let h = 24.0;
+        let top = mid - h * 0.5;
+        g.pill = Some(egui::Rect::from_min_max(egui::pos2(content_x - NAV_PILL_INSET, top), egui::pos2(row.right() - 13.0, top + h)));
+    }
+    // A parent's circular chevron node sits on its own column's trunk; the trunk goes through it
+    // (entering above, leaving below), never across the chevron.
+    if let Some(expanded) = collapsed.map(|c| !c) {
+        let centre = egui::pos2(left + nav_node_x(level), mid);
+        let stroke_active = active;
+        g.trunks.push(NavTrunk { x: centre.x, top: row.top(), bottom: centre.y - radius, active: stroke_active });
+        g.trunks.push(NavTrunk { x: centre.x, top: centre.y + radius, bottom: row.bottom(), active: stroke_active });
+        g.node = Some(NavNode { centre, radius, expanded, active });
+    }
+    // Trunks of every ancestor level; the innermost one ends at the curve when it is the last
+    // child (no loose end below it) and the row has an elbow.
+    if let Some(innermost) = guides.last().copied() {
+        let curve = nav_curve_radius(innermost);
+        let draw_curve = style == NavTreeStyle::FleetConnected || active;
+        for &a in guides {
+            let lit = active_guides.contains(&a);
+            let bottom = if last && a == innermost && draw_curve { mid - curve } else { row.bottom() };
+            g.trunks.push(NavTrunk { x: left + nav_node_x(a), top: row.top(), bottom, active: lit });
+        }
+        if draw_curve {
+            let x = left + nav_node_x(innermost);
+            // A parent's elbow reaches its node (SVG: curve to x=30 for the node at 34); a leaf's
+            // elbow reaches the pill (SVG 48) or stops 3 px before its badge/emoji.
+            let horizontal_end = match &g.node {
+                Some(node) => node.centre.x - 4.0,
+                None if selected => content_x - NAV_PILL_INSET,
+                None => content_x - 3.0,
+            };
+            if horizontal_end > x {
+                g.curves.push(NavCurve {
+                    start: egui::pos2(x, mid - curve),
+                    control: egui::pos2(x, mid),
+                    end: egui::pos2(x + curve, mid),
+                    horizontal_end,
+                    active: active || active_guides.contains(&innermost),
+                });
+            }
+        }
+    }
+    g
+}
+
+/// The child rows of a level under a node keep the trunk continuous, so the node's lower stub and
+/// the first child's trunk meet without a gap.
+#[cfg(test)]
+fn trunk_has_no_gap(a: &NavTrunk, b: &NavTrunk) -> bool {
+    (a.x - b.x).abs() < 0.01 && (a.bottom - b.top).abs() < 0.01
+}
 
 /// The row indices on the caret's branch, from the root down to the selected heading.
 fn active_chain(levels: &[u8], visible: &[bool], current: Option<usize>) -> Vec<usize> {
@@ -679,10 +883,6 @@ fn branch_guide_levels(ancestors: &[u8], chain: &[usize], levels: &[u8], i: usiz
     let Some(current) = current else { return Vec::new() };
     ancestors.iter().copied().filter(|a| chain.iter().any(|&k| levels.get(k) == Some(a) && k <= i) && i <= current).collect()
 }
-
-/// The colour of the keycap emoji the page draws (Noto Color Emoji's light steel blue): the pane
-/// reproduces the badge it makes, so the heading looks the same in both places.
-const KEYCAP_BADGE: egui::Color32 = egui::Color32::from_rgb(140, 175, 191);
 
 /// A heading that starts with a keycap (`1️⃣`, `#️⃣`): the digit and the text after the space
 /// that follows it. The interface fonts have no keycap ligature (they would draw the digit and
@@ -743,7 +943,7 @@ fn emoji_texture(ui: &Ui, text: &str, px: u32) -> Option<egui::TextureHandle> {
 /// Paint the colour images of the emoji in `text` over the glyphs the pane's (transparent) text
 /// found for them. The interface fonts have emoji only in monochrome; the page draws them from the
 /// colour font, and the Navigator follows the page rather than showing grey shapes.
-fn paint_emoji(ui: &Ui, pos: egui::Pos2, galley: &egui::Galley, text: &str, em: f32) {
+fn paint_emoji(ui: &Ui, painter: &egui::Painter, pos: egui::Pos2, galley: &egui::Galley, text: &str) {
     let ppp = ui.ctx().pixels_per_point();
     let mut glyphs = galley.rows.iter().flat_map(|r| r.glyphs.iter());
     for (s, e) in emoji_clusters(text) {
@@ -751,15 +951,25 @@ fn paint_emoji(ui: &Ui, pos: egui::Pos2, galley: &egui::Galley, text: &str, em: 
         // One glyph per drawn character, in order: the cluster's first character finds its box.
         let Some(g) = glyphs.find(|g| g.chr == first) else { continue };
         let baseline = pos.y + g.pos.y;
-        // An emoji fills its em square, not the (taller) line box: size it like the label's text so
-        // it sits with the words instead of swelling past them.
-        let target_h = (em * 1.05).max(1.0);
-        let top = baseline - target_h * 0.86;
-        let Some(tex) = emoji_texture(ui, &text[s..e], (target_h * ppp).round().max(1.0) as u32) else { continue };
+        // One icon column, as in the mockup: every emoji fits a 14 px box (height) and can never
+        // be wider than its slot (advance + the explicit gap), so a wide emoji neither swells nor
+        // touches the following letter; the dominant dimension is capped, so sizes match.
+        let box_side = NAV_EMOJI_BOX.max(1.0);
+        // The image fills only the glyph's advance; the explicit letter gap after the placeholder
+        // is what separates it from the next letter, as the mockup's 6 px icon gap does.
+        let slot_w = g.advance_width.max(6.0);
+        let Some(tex) = emoji_texture(ui, &text[s..e], (box_side * ppp).round().max(1.0) as u32) else { continue };
         let size = tex.size_vec2();
         let aspect = (size.x / size.y.max(1.0)).clamp(0.2, 5.0);
-        let rect = egui::Rect::from_min_size(egui::pos2(pos.x + g.pos.x, top), vec2(target_h * aspect, target_h));
-        ui.painter().image(tex.id(), rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+        let mut h = box_side;
+        let mut w = h * aspect;
+        if w > slot_w {
+            w = slot_w;
+            h = w / aspect;
+        }
+        let top = baseline - h * 0.86;
+        let rect = egui::Rect::from_min_size(egui::pos2(pos.x + g.pos.x, top), vec2(w, h));
+        painter.image(tex.id(), rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
     }
 }
 
@@ -771,6 +981,101 @@ fn paint_emoji(ui: &Ui, pos: egui::Pos2, galley: &egui::Galley, text: &str, em: 
 ///
 /// The row paints itself rather than using a Button: the label mixes text with colour emoji
 /// images, which a single widget's text cannot. `id` keeps its hover/selection and click stable.
+/// The segmented `[ Headings | Pages | Results ]` control: one line, three equal columns, a
+/// dark container with a hairline border and a filled blue active tab (the mockup's style).
+fn nav_tabs(ui: &mut Ui, current: &mut String) {
+    let t = Tokens::get(ui.ctx());
+    let width = ui.available_width().max(120.0);
+    let height = 24.0;
+    let (outer, _) = ui.allocate_exact_size(vec2(width, height), egui::Sense::hover());
+    ui.painter().rect_filled(outer, 6.0, t.nav_tab_bg);
+    ui.painter().rect_stroke(outer, 6.0, Stroke::new(1.0, t.nav_tab_border), egui::StrokeKind::Inside);
+    let cell = width / 3.0;
+    for (i, (key, label)) in [("headings", "Headings"), ("pages", "Pages"), ("results", "Results")].into_iter().enumerate() {
+        let rect = egui::Rect::from_min_size(egui::pos2(outer.left() + i as f32 * cell, outer.top()), vec2(cell, height));
+        let resp = ui.interact(rect, ui.scope_id().with(("nav_tab", key)), egui::Sense::click());
+        let on = current.as_str() == key;
+        if on {
+            ui.painter().rect_filled(rect.shrink(2.0), 5.0, t.nav_tab_active);
+        }
+        let colour = if on { t.nav_tab_active_text } else { ui.visuals().text_color() };
+        let font = if on { semibold(11.5) } else { regular(11.5) };
+        ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, tl!(label), font, colour);
+        resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, on, tl!(label)));
+        if resp.clicked() {
+            *current = key.to_string();
+        }
+    }
+}
+
+/// Paint the computed geometry of a row: trunks (with the active branch's glow), the quadratic
+/// elbow, and the circular chevron node.
+fn paint_nav_geometry(painter: &egui::Painter, g: &NavGeometry, t: &Tokens) {
+    for trunk in &g.trunks {
+        let stroke = if trunk.active { Stroke::new(NAV_TRUNK_ACTIVE_WIDTH, t.nav_trunk_active) } else { Stroke::new(NAV_TRUNK_WIDTH, t.nav_trunk) };
+        if trunk.active {
+            let glow = Stroke::new(NAV_TRUNK_ACTIVE_WIDTH + 2.0, t.nav_trunk_active.gamma_multiply(0.35));
+            painter.vline(trunk.x, trunk.top..=trunk.bottom, glow);
+        }
+        painter.vline(trunk.x, trunk.top..=trunk.bottom, stroke);
+    }
+    for curve in &g.curves {
+        let stroke = if curve.active { Stroke::new(NAV_TRUNK_ACTIVE_WIDTH, t.nav_curve_active) } else { Stroke::new(NAV_TRUNK_WIDTH, t.nav_curve) };
+        if curve.active {
+            painter.add(egui::epaint::QuadraticBezierShape::from_points_stroke(
+                [curve.start, curve.control, curve.end],
+                false,
+                egui::Color32::TRANSPARENT,
+                Stroke::new(NAV_TRUNK_ACTIVE_WIDTH + 2.0, t.nav_curve_active.gamma_multiply(0.35)),
+            ));
+            painter.hline(
+                curve.end.x..=curve.horizontal_end,
+                curve.end.y,
+                Stroke::new(NAV_TRUNK_ACTIVE_WIDTH + 2.0, t.nav_curve_active.gamma_multiply(0.35)),
+            );
+        }
+        painter.add(egui::epaint::QuadraticBezierShape::from_points_stroke(
+            [curve.start, curve.control, curve.end],
+            false,
+            egui::Color32::TRANSPARENT,
+            stroke,
+        ));
+        if curve.horizontal_end > curve.end.x {
+            painter.hline(curve.end.x..=curve.horizontal_end, curve.end.y, stroke);
+        }
+    }
+    if let Some(node) = &g.node {
+        let (fill, border, chevron) = if node.active {
+            (t.nav_node_fill_active, t.nav_node_border_active, t.nav_chevron_active)
+        } else {
+            (t.nav_node_fill, t.nav_node_border, t.nav_chevron)
+        };
+        painter.circle_filled(node.centre, node.radius, fill);
+        painter.circle_stroke(node.centre, node.radius, Stroke::new(if node.active { 1.35 } else { 1.2 }, border));
+        let (c, half) = (node.centre, node.radius);
+        let stroke = Stroke::new(1.5, chevron);
+        let pts = if node.expanded {
+            [egui::pos2(c.x - half * 0.55, c.y - half * 0.25), egui::pos2(c.x, c.y + half * 0.35), egui::pos2(c.x + half * 0.55, c.y - half * 0.25)]
+        } else {
+            [egui::pos2(c.x - half * 0.25, c.y - half * 0.55), egui::pos2(c.x + half * 0.35, c.y), egui::pos2(c.x - half * 0.25, c.y + half * 0.55)]
+        };
+        painter.line_segment([pts[0], pts[1]], stroke);
+        painter.line_segment([pts[1], pts[2]], stroke);
+    }
+}
+
+/// The one entry point the two toggles (Options and the pane's ▾ menu) use: the command validates
+/// the value, saves it to `ui.json` and marks the preferences for an immediate write.
+pub(crate) fn set_nav_tree_style(app: &mut WordApp, style: NavTreeStyle) {
+    if app.ui.nav_tree_style != style
+        && let Err(e) = app.run("ui.navTreeStyle", json!({"value": style.code()}))
+    {
+        app.status(e);
+    }
+}
+
+/// One heading in the pane: the trunk/elbow/node geometry, the keycap badge, the emoji and the
+/// label. `active` is the caret's branch (and the selected row); `style` switches between A and B.
 #[allow(clippy::too_many_arguments)]
 fn nav_heading(
     ui: &mut Ui,
@@ -783,31 +1088,45 @@ fn nav_heading(
     last: bool,
     active: bool,
     active_guides: &[u8],
+    style: NavTreeStyle,
 ) -> (bool, egui::Response) {
     let t = Tokens::get(ui.ctx());
-    let row_h = ui.spacing().interact_size.y;
+    let row_h = NAV_ROW_HEIGHT;
     let keycap = keycap_prefix(text);
     let label_text = keycap.map_or(text, |(_, rest)| rest);
-    // How wide the label may be: the row less the indent, the triangle slot, the keycap badge
-    // and the gaps between them. Budgeted here rather than from the cursor part-way through the
-    // row, so the label can never make the row wider than the pane (which used to widen it).
-    let gap = ui.spacing().item_spacing.x;
-    let badge_w = keycap.map_or(0.0, |_| (row_h * 0.78).max(9.0) * 1.08 + 5.0);
+    let radius = nav_node_radius(level);
+    let has_children = collapsed.is_some();
     let row_w = ui.available_width().max(0.0);
-    let label_w = (row_w - level as f32 * NAV_INDENT - NAV_FORK_SLOT - NAV_INDENT - badge_w - 3.0 * gap).max(24.0);
+    let content_x = nav_content_x(level);
+    let badge_w = keycap.map_or(0.0, |_| NAV_ICON_BOX + NAV_CONTENT_GAP);
+    // The selection pill insets its content by 5 px (SVG: pill x=48, icon x=55).
+    let shift = if selected { 5.0 } else { 0.0 };
+    let label_x = content_x + badge_w + shift;
+    let gap = ui.spacing().item_spacing.x;
+    let label_w = (row_w - label_x - 2.0 * gap).max(24.0);
 
-    // The row goes in first so its hover/selection fill is painted behind the text.
     let (row, _) = ui.allocate_exact_size(vec2(row_w, row_h), egui::Sense::hover());
     let hovered = ui.ctx().read_response(id).is_some_and(|r| r.hovered());
-    if selected {
-        ui.painter().rect_filled(row, 4.0, ui.visuals().selection.bg_fill);
+    let geometry = nav_row_geometry(row, level, guides, last, active, active_guides, style, collapsed, selected);
+    let painter = ui.painter().with_clip_rect(ui.clip_rect().expand2(vec2(NAV_PANE_TRIM, 0.0)));
+    paint_nav_geometry(&painter, &geometry, &t);
+    if let Some(pill) = geometry.pill {
+        painter.rect_filled(pill, 6.0, t.nav_pill_fill);
+        painter.rect_stroke(pill, 6.0, Stroke::new(1.2, t.nav_pill_border), egui::StrokeKind::Inside);
     } else if hovered {
-        ui.painter().rect_filled(row, 4.0, ui.visuals().widgets.hovered.weak_bg_fill);
+        let hover = egui::Rect::from_min_max(
+            egui::pos2(row.left() - NAV_PANE_TRIM + content_x - NAV_PILL_INSET, row.center().y - row_h * 0.5),
+            egui::pos2(row.right() - 6.0, row.center().y + row_h * 0.5),
+        );
+        painter.rect_filled(hover, 6.0, ui.visuals().widgets.hovered.weak_bg_fill);
     }
 
     // The label: text, with the emoji laid out transparent so their colour images can sit on top.
-    let ink = egui::TextFormat { font_id: regular(12.5), color: ui.visuals().text_color(), ..Default::default() };
-    let clear = egui::TextFormat { font_id: regular(12.5), color: egui::Color32::TRANSPARENT, ..Default::default() };
+    let font = if active || selected { semibold(12.0) } else { regular(12.0) };
+    let ink = egui::TextFormat { font_id: font.clone(), color: ui.visuals().text_color(), ..Default::default() };
+    // The emoji placeholder keeps the regular metrics (bold would change its advance and crowd
+    // the next letter), plus an explicit gap that the image can use without reaching the text.
+    let clear = egui::TextFormat { font_id: regular(12.0), color: egui::Color32::TRANSPARENT, ..Default::default() };
     let mut job = egui::text::LayoutJob::default();
     let mut prev = 0;
     for (s, e) in emoji_clusters(label_text) {
@@ -826,115 +1145,48 @@ fn nav_heading(
     let mut toggled = false;
     let label = ui
         .scope_builder(egui::UiBuilder::new().max_rect(row).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
-            ui.add_space(level as f32 * NAV_INDENT);
-            // The articulation node's slot: the Modelo 2 diagram puts ●/○ before the triangle, and
-            // the trunk to the children leaves from its middle; rows without children keep it empty
-            // so every label aligns.
-            let (fork, _) = ui.allocate_exact_size(vec2(NAV_FORK_SLOT, row_h), egui::Sense::hover());
-            let _ = fork;
-            // The triangle is drawn in code; headings without children keep an empty slot so text aligns.
-            let (rect, tri) = ui.allocate_exact_size(vec2(NAV_INDENT, row_h), egui::Sense::click());
-            if let Some(c) = collapsed {
-                let ctr = rect.center();
-                let col = ui.visuals().text_color();
-                let pts = if c {
-                    vec![ctr + vec2(-2.5, -4.0), ctr + vec2(-2.5, 4.0), ctr + vec2(3.0, 0.0)]
-                } else {
-                    vec![ctr + vec2(-4.0, -2.5), ctr + vec2(4.0, -2.5), ctr + vec2(0.0, 3.0)]
-                };
-                ui.painter().add(egui::Shape::convex_polygon(pts, col, Stroke::NONE));
-                toggled = tri.clicked();
+            // The SVG's columns are exact; any implicit spacing between the row's pieces would
+            // shift every badge/icon column by a few points, so only the explicit gaps count.
+            ui.spacing_mut().item_spacing.x = 0.0;
+            // Every row reserves the same chevron gap, whether or not it has children: the button
+            // must never push one sibling's title deeper than another's. A leaf leaves the slot
+            // empty (the geometry only paints a node for parents).
+            ui.add_space((nav_node_x(level) - radius).max(0.0));
+            let (node_rect, _) = ui.allocate_exact_size(vec2(2.0 * radius, row_h), egui::Sense::hover());
+            if has_children {
+                let node_resp = ui.interact(node_rect.translate(vec2(-NAV_PANE_TRIM, 0.0)), id.with("node"), egui::Sense::click());
+                if node_resp.clicked() {
+                    toggled = true;
+                }
+                node_resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, collapsed == Some(false), tl!("Expand or collapse")));
+            }
+            ui.add_space((content_x - (nav_node_x(level) + radius)).max(0.0));
+            if selected {
+                ui.add_space(shift);
             }
             if let Some((digit, _)) = keycap {
-                // The keycap the page draws: a rounded square in the accent colour with the digit on
-                // it, at the row's text height.
-                let h = (row_h * 0.78).max(9.0);
-                let (slot, _) = ui.allocate_exact_size(vec2(h * 1.08, row_h), egui::Sense::hover());
-                let badge = egui::Rect::from_center_size(slot.center(), vec2(h * 1.08, h));
-                ui.painter().rect_filled(badge, 2.5, KEYCAP_BADGE);
-                ui.painter().text(badge.center(), egui::Align2::CENTER_CENTER, digit, semibold(h * 0.62), egui::Color32::WHITE);
-                ui.add_space(5.0);
+                let (slot, _) = ui.allocate_exact_size(vec2(NAV_ICON_BOX, row_h), egui::Sense::hover());
+                let badge = egui::Rect::from_center_size(slot.center() + vec2(-NAV_PANE_TRIM, 0.0), vec2(NAV_ICON_BOX, NAV_ICON_BOX));
+                let fill = if active || selected { t.nav_badge_active } else { t.nav_badge };
+                painter.rect_filled(badge, 3.0, fill);
+                painter.text(badge.center(), egui::Align2::CENTER_CENTER, digit, semibold(9.5), egui::Color32::WHITE);
+                ui.add_space(NAV_CONTENT_GAP);
             }
             let width = ui.available_width().max(0.0);
             let (label_rect, resp) = ui.allocate_exact_size(vec2(width, row_h), egui::Sense::click());
-            let pos = label_rect.left_top() + vec2(0.0, ((row_h - galley.size().y) * 0.5).max(0.0));
-            ui.painter().galley(pos, galley.clone(), ui.visuals().text_color());
-            paint_emoji(ui, pos, &galley, label_text, 12.5);
-            // The whole heading stays the row's accessible name, and a click anywhere on the label
-            // jumps to it (the caller handles it).
+            let pos = label_rect.left_top() + vec2(-NAV_PANE_TRIM, ((row_h - galley.size().y) * 0.5).max(0.0));
+            painter.galley(pos, galley.clone(), ui.visuals().text_color());
+            paint_emoji(ui, &painter, pos, &galley, label_text);
             resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected, text));
-            ui.interact(label_rect, id, egui::Sense::click())
+            ui.interact(label_rect.translate(vec2(-NAV_PANE_TRIM, 0.0)), id, egui::Sense::click())
         })
         .inner;
 
     if ui.ctx().memory(|m| m.has_focus(id)) {
         ui.painter().rect_stroke(row.shrink(1.0), 4.0, Stroke::new(1.0, t.accent), egui::StrokeKind::Inside);
     }
-    // The tree's connector lines, painted under the indent and the triangle only so they never
-    // run over the label. Modelo 2 — Curva Orgânica Fluida: one continuous trunk per ancestor
-    // level (the rows are laid out with no vertical spacing, so there are no cuts between them),
-    // a quarter-circle elbow into this row, and a small node where a parent's children branch.
-    let mid = row.center().y;
-    let left = row.left();
-    // The trunk of a level runs through the middle of that level's fork slot; a row's own connector
-    // ends there (at the node when it has children).
-    let fork_x = |a: u8| left + a as f32 * NAV_INDENT + NAV_FORK_SLOT * 0.5;
-    let end = fork_x(level);
-    let normal = Stroke::new(NAV_GUIDE_WIDTH, t.tree_line);
-    if let Some(innermost) = guides.last().copied() {
-        let painter = ui.painter();
-        let radius = NAV_ELBOW_RADIUS.min((row.height() * 0.5 - 1.0).max(2.0));
-        // Each trunk of the active branch is lit from the root down to the selected heading: a
-        // segment belongs to the branch when the selected row is inside that ancestor's subtree
-        // and the segment lies above it, which includes the siblings passed on the way.
-        let lit = |a: u8| active_guides.contains(&a);
-        let glow = Stroke::new(NAV_ACTIVE_WIDTH + 2.0, t.accent.gamma_multiply(0.35));
-        for &a in guides {
-            let bottom = if last && a == innermost { mid - radius } else { row.bottom() };
-            if lit(a) {
-                painter.vline(fork_x(a), row.top()..=bottom, glow);
-            }
-            painter.vline(fork_x(a), row.top()..=bottom, if lit(a) { Stroke::new(NAV_ACTIVE_WIDTH, t.accent) } else { normal });
-        }
-        // The organic elbow: the trunk turns into the row through a quarter circle, never a hard
-        // right angle.
-        let x = fork_x(innermost);
-        let elbow = if active { Stroke::new(NAV_ACTIVE_WIDTH, t.accent) } else { normal };
-        // A row without children has no node or triangle; the connector runs on to where its label
-        // (or keycap badge) starts, so the branch reads as joined instead of stopping short.
-        let target = if collapsed.is_some() { end } else { left + level as f32 * NAV_INDENT + NAV_FORK_SLOT + NAV_INDENT };
-        if active {
-            painter.hline(x + radius..=target, mid, glow);
-        }
-        if target > x {
-            let c = radius * 0.552_284_8;
-            painter.add(egui::epaint::CubicBezierShape::from_points_stroke(
-                [pos2(x, mid - radius), pos2(x, mid - radius + c), pos2(x + radius - c, mid), pos2(x + radius, mid)],
-                false,
-                egui::Color32::TRANSPARENT,
-                elbow,
-            ));
-            painter.hline(x + radius..=target, mid, elbow);
-        }
-    }
-    // The articulation node: filled while the group is open, hollow while it is collapsed. A stub
-    // reaches from it to the first child's row, so the branch has no cut at the parent's bottom half.
-    if let Some(collapsed) = collapsed {
-        let centre = pos2(end, mid);
-        let colour = if active { t.accent } else { t.tree_line };
-        if !collapsed {
-            ui.painter().vline(end, mid + NAV_NODE_RADIUS..=row.bottom(), Stroke::new(NAV_GUIDE_WIDTH, if active { t.accent } else { t.tree_line }));
-        }
-        if collapsed {
-            ui.painter().circle_filled(centre, NAV_NODE_RADIUS, t.panel);
-            ui.painter().circle_stroke(centre, NAV_NODE_RADIUS, Stroke::new(1.35, colour));
-        } else {
-            ui.painter().circle_filled(centre, NAV_NODE_RADIUS, colour);
-        }
-    }
     (toggled, label.on_hover_text(text))
 }
-
 /// Items collected by Copy and Cut, newest first; clicking one pastes it at the caret.
 fn clipboard(app: &mut WordApp, ui: &mut Ui) {
     let items: Vec<String> = app.session.clip_history.items().iter().map(|i| i.preview()).collect();
@@ -1983,6 +2235,98 @@ mod tests {
 mod navigation_tests {
     use super::*;
 
+    /// Modelo 2: the elbow leaves the trunk going down (`mid - r`), turns through a quadratic
+    /// control on the row's middle line and arrives horizontally from the left, never as `╭`.
+    #[test]
+    fn the_curve_starts_above_the_row_and_turns_right() {
+        let row = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(300.0, NAV_ROW_HEIGHT));
+        let g = nav_row_geometry(row, 2, &[0, 1], false, true, &[0, 1], NavTreeStyle::ZedLinear, None, false);
+        let curve = g.curves.first().expect("an active row has its elbow");
+        let mid = row.center().y;
+        assert!((curve.start.y - (mid - nav_curve_radius(1))).abs() < 0.01, "starts above the middle");
+        assert_eq!(curve.start.x, row.left() - NAV_PANE_TRIM + nav_node_x(1), "starts on the trunk");
+        assert!(curve.control.y > curve.start.y && curve.control.y == mid, "the quadratic control is on the middle line");
+        assert!(curve.end.x > curve.start.x, "turns right");
+        assert_eq!(curve.end.y, mid);
+        assert_eq!(curve.horizontal_end, g.content_x - 3.0, "a leaf's elbow stops before its badge");
+    }
+
+    /// The active curve ends exactly on the selection pill's left border.
+    #[test]
+    fn the_curve_meets_the_selection_pill() {
+        let row = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(300.0, NAV_ROW_HEIGHT));
+        let g = nav_row_geometry(row, 2, &[0, 1], false, true, &[0, 1], NavTreeStyle::ZedLinear, None, true);
+        let pill = g.pill.expect("the selected row has a pill");
+        let curve = g.curves.first().expect("the selected row has its elbow");
+        assert!((pill.left() - curve.horizontal_end).abs() < 0.01, "{} vs {}", pill.left(), curve.horizontal_end);
+        assert!((pill.left() - (g.content_x - NAV_PILL_INSET)).abs() < 0.01);
+        assert!((22.0..=24.0).contains(&pill.height()), "pill height {}", pill.height());
+    }
+
+    /// Trunks of consecutive rows meet without a gap: the row above ends where the next begins.
+    #[test]
+    fn consecutive_rows_have_no_gap_in_the_trunk() {
+        let a = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(300.0, NAV_ROW_HEIGHT));
+        let b = a.translate(vec2(0.0, NAV_ROW_HEIGHT));
+        let ga = nav_row_geometry(a, 2, &[0, 1], false, false, &[], NavTreeStyle::FleetConnected, None, false);
+        let gb = nav_row_geometry(b, 2, &[0, 1], false, false, &[], NavTreeStyle::FleetConnected, None, false);
+        let ta = ga.trunks.iter().find(|t| (t.x - (a.left() - NAV_PANE_TRIM + nav_node_x(0))).abs() < 0.01).expect("the outer trunk");
+        let tb = gb.trunks.iter().find(|t| (t.x - (b.left() - NAV_PANE_TRIM + nav_node_x(0))).abs() < 0.01).expect("the outer trunk");
+        assert!(trunk_has_no_gap(ta, tb));
+    }
+
+    /// A parent's rail goes through the node: it stops at the circle's top and resumes at its
+    /// base, so the chevron is never crossed by a line.
+    #[test]
+    fn the_trunk_enters_and_leaves_the_node_without_crossing_it() {
+        let row = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(300.0, NAV_ROW_HEIGHT));
+        let g = nav_row_geometry(row, 1, &[0], true, true, &[0], NavTreeStyle::ZedLinear, Some(false), false);
+        let node = g.node.expect("a parent has a node");
+        assert!(g.trunks.iter().any(|t| (t.x - node.centre.x).abs() < 0.01 && t.bottom + 0.01 >= node.centre.y - node.radius));
+        assert!(g.trunks.iter().any(|t| (t.x - node.centre.x).abs() < 0.01 && t.top <= node.centre.y + node.radius + 0.01));
+        assert_eq!(node.radius, nav_node_radius(1));
+        assert!(node.expanded);
+    }
+
+    /// Option A leaves inactive leaves without an elbow; Option B connects every child. Both keep
+    /// the same trunk, node and pill geometry.
+    #[test]
+    fn option_a_has_no_inactive_elbows_and_option_b_connects_every_child() {
+        let row = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(300.0, NAV_ROW_HEIGHT));
+        let a = nav_row_geometry(row, 2, &[0, 1], false, false, &[], NavTreeStyle::ZedLinear, None, false);
+        assert!(a.curves.is_empty(), "A: an inactive leaf has no comb teeth");
+        let b = nav_row_geometry(row, 2, &[0, 1], false, false, &[], NavTreeStyle::FleetConnected, None, false);
+        let curve = b.curves.first().expect("B: every child is connected");
+        assert!(!curve.active, "an inactive child's elbow is grey");
+        assert_eq!(b.pill, None);
+    }
+
+    /// B: a nested trunk ends on the last child's curve, while the outer (root) rail continues to
+    /// the next root row.
+    #[test]
+    fn option_b_ends_the_nested_trunk_on_the_last_curve() {
+        let row = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(300.0, NAV_ROW_HEIGHT));
+        let g = nav_row_geometry(row, 2, &[0, 1], true, false, &[], NavTreeStyle::FleetConnected, None, false);
+        let inner = g.trunks.iter().find(|t| (t.x - (row.left() - NAV_PANE_TRIM + nav_node_x(1))).abs() < 0.01).expect("inner trunk");
+        let outer = g.trunks.iter().find(|t| (t.x - (row.left() - NAV_PANE_TRIM + nav_node_x(0))).abs() < 0.01).expect("root rail");
+        assert!((inner.bottom - (row.center().y - nav_curve_radius(1))).abs() < 0.01, "no loose end below the last child");
+        assert!((outer.bottom - row.bottom()).abs() < 0.01, "the root rail goes on to the next root");
+    }
+
+    /// The style is persisted as `navTreeStyle`; an old file (no key) or an unknown value loads as
+    /// Option A without dropping the rest of the preferences.
+    #[test]
+    fn the_saved_style_defaults_to_a_and_tolerates_unknown_values() {
+        assert_eq!(NavTreeStyle::default(), NavTreeStyle::ZedLinear);
+        assert_eq!(NavTreeStyle::from_code("fleet_connected"), Some(NavTreeStyle::FleetConnected));
+        assert_eq!(NavTreeStyle::from_code("sepia"), None);
+        let old: crate::UiState = serde_json::from_str(r#"{"tab":"Insert"}"#).unwrap();
+        assert_eq!(old.nav_tree_style, NavTreeStyle::ZedLinear);
+        let odd: crate::UiState = serde_json::from_str(r#"{"navTreeStyle":"sepia","tab":"Insert"}"#).unwrap();
+        assert_eq!(odd.nav_tree_style, NavTreeStyle::ZedLinear);
+        assert_eq!(odd.tab, "Insert");
+    }
+
     /// Numbered headings are listed with the number they show, and numbered body paragraphs in
     /// the same list still count (#3418).
     #[test]
@@ -2023,7 +2367,22 @@ mod navigation_tests {
             let output = ctx.run_ui(egui::RawInput { screen_rect: Some(screen), ..Default::default() }, |ui| {
                 let result = egui::Panel::left("navigation_test").default_size(width).resizable(true).show(ui, |ui| {
                     egui::ScrollArea::vertical()
-                        .show(ui, |ui| nav_heading(ui, egui::Id::unique(("t", level)), level, text, true, None, &[], true, false, &[]).1)
+                        .show(ui, |ui| {
+                            nav_heading(
+                                ui,
+                                egui::Id::unique(("t", level)),
+                                level,
+                                text,
+                                true,
+                                None,
+                                &[],
+                                true,
+                                false,
+                                &[],
+                                super::NavTreeStyle::ZedLinear,
+                            )
+                            .1
+                        })
                         .inner
                 });
                 panel_rect = result.response.rect;
@@ -2067,9 +2426,9 @@ mod navigation_tests {
             let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(900.0, 600.0));
             let mut panel_left = 0.0;
             let output = ctx.run_ui(egui::RawInput { screen_rect: Some(screen), ..Default::default() }, |ui| {
-                let result = egui::Panel::left("navigation_test")
-                    .default_size(260.0)
-                    .show(ui, |ui| nav_heading(ui, egui::Id::unique("t2"), level, "Kilns", false, None, &[], true, false, &[]));
+                let result = egui::Panel::left("navigation_test").default_size(260.0).show(ui, |ui| {
+                    nav_heading(ui, egui::Id::unique("t2"), level, "Kilns", false, None, &[], true, false, &[], super::NavTreeStyle::ZedLinear)
+                });
                 panel_left = result.response.rect.min.x;
             });
             let x = output
@@ -2084,10 +2443,10 @@ mod navigation_tests {
             x - panel_left
         };
         let (top, second) = (text_left(0), text_left(1));
-        // The Modelo 2 fork slot (the articulation node) sits before the triangle, so the label
-        // starts a little further in than the old 22 px; the indent per level is unchanged.
+        // Every row reserves the chevron gap, so parents and leaves share the column; the step
+        // between levels is the 16 px column step (content 30 → 46).
         assert!(top < 56.0, "a top-level heading starts at the pane's left edge, not centred: {top}px in");
-        assert!((second - top - 14.0).abs() < 0.5, "a level-2 heading is indented 14px under its parent: {top} / {second}");
+        assert!((second - top - 16.0).abs() < 0.5, "a level-2 heading starts one level column in (30 → 46): {top} / {second}");
     }
 
     /// Collapsing a heading hides everything nested under it, and only that (#1997).
