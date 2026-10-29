@@ -49,7 +49,7 @@ impl LineContext<'_, '_, '_> {
     fn ink(&self, color: &TextColor, background: Option<Rgb>) -> Rgb {
         match (color, self.auto) {
             (TextColor::Auto, Some(rgb)) => rgb,
-            _ => text_color(color, background),
+            _ => text_color(color, background.or(self.doc.settings.page_color)),
         }
     }
 }
@@ -216,7 +216,7 @@ fn draw_glyph_runs(ctx: &LineContext<'_, '_, '_>, out: &mut Vec<Draw>) {
         // Moved text marked (none) is plain text, its colour setting aside (Word for Mac).
         let plain_move = (moved_from && m.move_from_mark == DeleteMark::None) || (moved_to && m.move_to_mark == InsertMark::None);
         let color = match (ins, del) {
-            _ if plain_move => text_color(&rc.color, rc.shading.or(rc.highlight)),
+            _ if plain_move => text_color(&rc.color, rc.shading.or(rc.highlight).or(doc.settings.page_color)),
             (_, Some(r)) if moved_from => m.move_from_color.unwrap_or_else(|| author(r)),
             (Some(r), _) if moved_to => m.move_to_color.unwrap_or_else(|| author(r)),
             (Some(r), _) => m.insert_color.unwrap_or_else(|| author(r)),

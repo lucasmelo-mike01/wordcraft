@@ -264,6 +264,33 @@ pub struct Tokens {
     /// Find › Reading Highlight.
     pub find_highlight: Color32,
     pub page_shadow: Color32,
+    /// The one-pixel edge around each sheet: keeps a page visible when its own colour is close
+    /// to the workspace's (a dark page colour in the dark theme), as Writer's page edge does.
+    pub page_border: Color32,
+    /// The Navigation pane's tree connectors (the guides joining a heading to its parent): thin
+    /// lines that must read on the pane without competing with the headings themselves.
+    pub tree_line: Color32,
+    // Navigation tree (Modelo 2, options A and B): tokens so both themes stay legible and no
+    // colour lives in `panes.rs`.
+    pub nav_tab_bg: Color32,
+    pub nav_tab_border: Color32,
+    pub nav_tab_active: Color32,
+    pub nav_tab_active_text: Color32,
+    pub nav_trunk: Color32,
+    pub nav_trunk_active: Color32,
+    pub nav_node_fill: Color32,
+    pub nav_node_fill_active: Color32,
+    pub nav_node_border: Color32,
+    pub nav_node_border_active: Color32,
+    pub nav_chevron: Color32,
+    pub nav_chevron_active: Color32,
+    pub nav_curve: Color32,
+    pub nav_curve_active: Color32,
+    pub nav_pill_fill: Color32,
+    pub nav_pill_border: Color32,
+    /// Keycap badges: the mockup's grey-blue for ordinary rows, the active blue on the chain.
+    pub nav_badge: Color32,
+    pub nav_badge_active: Color32,
     /// Selection-frame handles (pictures, shapes, text boxes) and their shadow.
     pub handle: Color32,
     pub handle_shadow: Color32,
@@ -332,6 +359,26 @@ impl Tokens {
             selection: Color32::from_rgba_unmultiplied(0x3B, 0x5B, 0xDB, 0x48),
             find_highlight: Color32::from_rgba_unmultiplied(0xFF, 0xE0, 0x3D, 0x90),
             page_shadow: Color32::from_rgba_unmultiplied(0, 0, 0, 0x22),
+            page_border: Color32::from_rgb(0xC8, 0xC8, 0xC8),
+            tree_line: Color32::from_rgb(0xBD, 0xBD, 0xC2),
+            nav_tab_bg: Color32::from_rgb(0xF4, 0xF4, 0xF5),
+            nav_tab_border: Color32::from_rgb(0xD4, 0xD4, 0xD8),
+            nav_tab_active: Color32::from_rgb(0x25, 0x63, 0xEB),
+            nav_tab_active_text: Color32::WHITE,
+            nav_trunk: Color32::from_rgb(0xA1, 0xA1, 0xAA),
+            nav_trunk_active: Color32::from_rgb(0x25, 0x63, 0xEB),
+            nav_node_fill: Color32::from_rgb(0xF4, 0xF4, 0xF5),
+            nav_node_fill_active: Color32::from_rgb(0xDB, 0xEA, 0xFE),
+            nav_node_border: Color32::from_rgb(0xA1, 0xA1, 0xAA),
+            nav_node_border_active: Color32::from_rgb(0x25, 0x63, 0xEB),
+            nav_chevron: Color32::from_rgb(0x52, 0x52, 0x5B),
+            nav_chevron_active: Color32::from_rgb(0x1D, 0x4E, 0xD8),
+            nav_curve: Color32::from_rgb(0xA1, 0xA1, 0xAA),
+            nav_curve_active: Color32::from_rgb(0x25, 0x63, 0xEB),
+            nav_pill_fill: Color32::from_rgba_unmultiplied(0x25, 0x63, 0xEB, 0x1F),
+            nav_pill_border: Color32::from_rgb(0x93, 0xC5, 0xFD),
+            nav_badge: Color32::from_rgb(0xCB, 0xD5, 0xE1),
+            nav_badge_active: Color32::from_rgb(0x25, 0x63, 0xEB),
             handle: Color32::WHITE,
             handle_shadow: Color32::from_rgba_unmultiplied(0, 0, 0, 0x28),
             guide: Color32::from_rgb(0xC0, 0x28, 0x8C),
@@ -372,7 +419,9 @@ impl Tokens {
             title_bar: Color32::from_rgb(0x1F, 0x1F, 0x1F),
             ribbon: Color32::from_rgb(0x29, 0x29, 0x29),
             tab_strip: Color32::from_rgb(0x1F, 0x1F, 0x1F),
-            canvas: Color32::from_rgb(0x14, 0x14, 0x14),
+            // Writer's workspace around a sheet (#222226): dark pages (e.g. #181818) still stand
+            // out from it, with the page's own edge doing the rest.
+            canvas: Color32::from_rgb(0x22, 0x22, 0x26),
             panel: Color32::from_rgb(0x26, 0x26, 0x26),
             border: Color32::from_rgb(0x3A, 0x3A, 0x3A),
             border_strong: Color32::from_rgb(0x55, 0x55, 0x55),
@@ -398,7 +447,29 @@ impl Tokens {
             status_bar: Color32::from_rgb(0x1F, 0x1F, 0x1F),
             selection: Color32::from_rgba_unmultiplied(0x7A, 0x93, 0xF0, 0x55),
             find_highlight: Color32::from_rgba_unmultiplied(0xC8, 0xA8, 0x00, 0x70),
-            page_shadow: Color32::from_rgba_unmultiplied(0, 0, 0, 0x60),
+            page_shadow: Color32::from_rgba_unmultiplied(0, 0, 0, 0x70),
+            page_border: Color32::from_rgb(0x3E, 0x3E, 0x45),
+            // Clearer than `border` on the pane (#262626): the tree's thin connectors were almost
+            // invisible in the dark theme.
+            tree_line: Color32::from_rgb(0x55, 0x55, 0x5E),
+            nav_tab_bg: Color32::from_rgb(0x14, 0x15, 0x18),
+            nav_tab_border: Color32::from_rgb(0x27, 0x27, 0x2A),
+            nav_tab_active: Color32::from_rgb(0x25, 0x63, 0xEB),
+            nav_tab_active_text: Color32::WHITE,
+            nav_trunk: Color32::from_rgb(0x52, 0x52, 0x5B),
+            nav_trunk_active: Color32::from_rgb(0x60, 0xA5, 0xFA),
+            nav_node_fill: Color32::from_rgb(0x27, 0x27, 0x2A),
+            nav_node_fill_active: Color32::from_rgb(0x1E, 0x3A, 0x8A),
+            nav_node_border: Color32::from_rgb(0x71, 0x71, 0x7A),
+            nav_node_border_active: Color32::from_rgb(0x60, 0xA5, 0xFA),
+            nav_chevron: Color32::from_rgb(0xA1, 0xA1, 0xAA),
+            nav_chevron_active: Color32::from_rgb(0x93, 0xC5, 0xFD),
+            nav_curve: Color32::from_rgb(0x64, 0x74, 0x8B),
+            nav_curve_active: Color32::from_rgb(0x60, 0xA5, 0xFA),
+            nav_pill_fill: Color32::from_rgba_unmultiplied(0x1D, 0x4E, 0xD8, 0x73),
+            nav_pill_border: Color32::from_rgb(0x3B, 0x82, 0xF6),
+            nav_badge: Color32::from_rgb(0x47, 0x55, 0x69),
+            nav_badge_active: Color32::from_rgb(0x3B, 0x82, 0xF6),
             handle: Color32::from_rgb(0xF2, 0xF2, 0xF2),
             handle_shadow: Color32::from_rgba_unmultiplied(0, 0, 0, 0x5A),
             guide: Color32::from_rgb(0xE0, 0x4C, 0xB0),
@@ -1072,6 +1143,9 @@ mod tests {
         let exempt = |c: char, file: &str| match file {
             "equation_tab.rs" => matches!(c, '≜' | '┬'),
             _ if file == "ribbon.rs" || file.starts_with("ribbon/") => c == '➢',
+            // The Navigation pane paints the emoji in heading labels from the colour emoji font;
+            // its variation selectors and keycap marks are painted by that image too.
+            _ if file == "panes.rs" || file.starts_with("panes/") => wordcraft_fonts::is_emoji(c) || wordcraft_fonts::is_default_ignorable(c),
             _ => false,
         };
         symbols.retain(|(c, file)| !exempt(*c, file));

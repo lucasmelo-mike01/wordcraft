@@ -1,3 +1,5 @@
+use wordcraft_doc::Rgb;
+
 use super::body::Body;
 use super::limits::{MAX_ENTRY, MAX_SECTIONS};
 use super::styles::{Styles, column_sep, columns_of};
@@ -114,7 +116,7 @@ fn parse_full(bytes: &[u8]) -> Result<(Flow, SectionProps), String> {
 }
 
 /// [`parse_full`], plus whether change tracking is on (`None`: the document has no tracked changes).
-fn parse_tracked(bytes: &[u8]) -> Result<(Flow, SectionProps, Option<bool>, Option<String>, page_parts::Parts), String> {
+fn parse_tracked(bytes: &[u8]) -> Result<(Flow, SectionProps, Option<bool>, Option<String>, page_parts::Parts, Option<Rgb>), String> {
     wordcraft_doc::zip_guard::check(bytes, crate::MAX_ZIP_ENTRIES).map_err(|e| format!("ODT: {e}"))?;
     let mut z = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| format!("ODT: not a valid package ({e})"))?;
     if let Some(mt) = read_entry(&mut z, "mimetype") {
@@ -155,13 +157,13 @@ fn parse_tracked(bytes: &[u8]) -> Result<(Flow, SectionProps, Option<bool>, Opti
         blocks.push(FBlock::Para(Para::default()));
     }
     let track = body.track;
-    Ok((Flow { blocks, meta }, last, track, styles.doc_font(), parts))
+    Ok((Flow { blocks, meta }, last, track, styles.doc_font(), parts, pages.background))
 }
 
 /// Parse an `.odt` package into a document.
 pub fn import(bytes: &[u8]) -> Result<Document, String> {
     model::begin_import();
-    let (flow, last, track, font, parts) = parse_tracked(bytes)?;
+    let (flow, last, track, font, parts, page_color) = parse_tracked(bytes)?;
     let mut doc = model::to_doc(&flow);
     if font.is_some() {
         doc.styles.default_chr.font = font;
@@ -171,6 +173,12 @@ pub fn import(bytes: &[u8]) -> Result<Document, String> {
     if let Some(t) = track {
         doc.settings.track_changes = t;
     }
+    doc.settings.page_color = page_color;
+    // ODT's text language is not read yet (a known limit of this importer): don't let the built-in
+    // sheet's `en-US` look like the file's own language, or a Portuguese document would be
+    // proofed as English. With no language the app's proofing default applies (see
+    // `Session`/`adopt_default_language`).
+    doc.styles.default_chr.lang = None;
     Ok(doc)
 }
 
@@ -181,6 +189,9 @@ pub(super) struct Pages {
     pub(super) masters: HashMap<String, SectionProps>,
     pub(super) first: Option<SectionProps>,
     pub(super) first_name: Option<String>,
+    /// The page background of the default master page: a document-wide setting in WordCraft's
+    /// model, as it is in the DOCX reader (`w:background`).
+    pub(super) background: Option<Rgb>,
 }
 
 fn read_pages(xml: &[u8]) -> Pages {
@@ -233,6 +244,7 @@ fn read_pages(xml: &[u8]) -> Pages {
         if pages.first.is_none() {
             pages.first = Some(sec.clone());
             pages.first_name = Some(name.clone());
+            pages.background = get(a, "fo:background-color").and_then(model::parse_color);
         }
         pages.masters.entry(name).or_insert(sec);
     }
@@ -250,9 +262,9 @@ pub(super) fn apply_page_layout(xml: &[u8], sec: &mut SectionProps) {
 /// A `style:page-layout-properties` element's page size, orientation and margins into `sec`.
 fn apply_layout(a: &Attrs, sec: &mut SectionProps) {
     let len = |k: &str| get(a, k).and_then(length).filter(|v| *v >= 0.0);
-    // Like the DOCX reader: a page is at least half an inch; at most 22 inches (Word's limit), so a hostile
-    // `1e30pt` can't reach layout.
-    let page = |k: &str| len(k).filter(|v| *v >= 36.0).map(|v| v.min(1584.0));
+    // Like the DOCX reader: a page is at least half an inch; at most 600 cm (LibreOffice's limit),
+    // so a hostile `1e30pt` can't reach layout but a Writer page of 600 cm still opens.
+    let page = |k: &str| len(k).filter(|v| *v >= 36.0).map(|v| v.min(wordcraft_doc::section::MAX_PAGE_SIDE));
     if let (Some(w), Some(h)) = (page("fo:page-width"), page("fo:page-height")) {
         sec.page_w = w;
         sec.page_h = h;

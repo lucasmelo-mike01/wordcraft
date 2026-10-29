@@ -978,6 +978,50 @@ fn app_harness(app: WordApp) -> egui_kittest::Harness<'static, WordApp> {
     )
 }
 
+/// Page Setup › Page Color: opening the dialog reads the document's page colour, typing a hex
+/// changes it on OK, and No Color removes it.
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn page_setup_page_color_round_trips() {
+    use egui_kittest::kittest::Queryable;
+    let mut app = app_with("Page");
+    app.session.doc.settings.page_color = Some(wordcraft_doc::Rgb(0x18, 0x18, 0x18));
+    let mut h = app_harness(app);
+    let dialog = Dialog::open("pageSetup", h.state_mut());
+    h.state_mut().dialog = dialog;
+    h.run_steps(4);
+    if let Some(Dialog::PageSetup { page_color, .. }) = h.state_mut().dialog.as_mut() {
+        assert_eq!(page_color, "181818");
+        *page_color = "202020".to_string();
+    }
+    h.run_steps(2);
+    h.get_by_label("OK").click();
+    h.run_steps(3);
+    assert_eq!(h.state().session.doc.settings.page_color, Some(wordcraft_doc::Rgb(0x20, 0x20, 0x20)));
+
+    // Reopening shows the new colour; an invalid hex keeps OK disabled and changes nothing.
+    let dialog = Dialog::open("pageSetup", h.state_mut());
+    h.state_mut().dialog = dialog;
+    h.run_steps(2);
+    if let Some(Dialog::PageSetup { page_color, .. }) = h.state_mut().dialog.as_mut() {
+        assert_eq!(page_color, "202020");
+        *page_color = "18".to_string();
+    }
+    h.run_steps(2);
+    h.get_by_label("OK").click();
+    h.run_steps(3);
+    assert!(h.state().dialog.is_some(), "an invalid colour leaves the dialog open");
+    assert_eq!(h.state().session.doc.settings.page_color, Some(wordcraft_doc::Rgb(0x20, 0x20, 0x20)));
+    // Clearing it gives the document no page colour again.
+    if let Some(Dialog::PageSetup { page_color, .. }) = h.state_mut().dialog.as_mut() {
+        page_color.clear();
+    }
+    h.run_steps(2);
+    h.get_by_label("OK").click();
+    h.run_steps(3);
+    assert_eq!(h.state().session.doc.settings.page_color, None, "No Color restores the default");
+}
+
 /// The Page Setup paper size as opened, in points, and the Paper size entry it shows.
 fn opened_paper(app: &mut WordApp) -> ((f32, f32), Option<&'static str>) {
     let Some(Dialog::PageSetup { paper, .. }) = Dialog::open("pageSetup", app) else { panic!("no page setup dialog") };

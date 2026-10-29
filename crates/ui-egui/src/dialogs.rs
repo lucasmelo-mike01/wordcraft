@@ -34,7 +34,7 @@ use bookmarks::bookmark_at_caret;
 #[cfg(test)]
 use bookmarks::bookmark_names;
 pub use chrome::show;
-pub(crate) use chrome::{buttons, cancel_key_pressed, color_menu, ok_cancel_responses};
+pub(crate) use chrome::{buttons, cancel_key_pressed, color_field, color_menu, ok_cancel_responses};
 pub use find::{FindExtra, FindTab, GoToWhat};
 #[cfg(test)]
 use find::{command_matches, goto_page, swallow_shortcut_text};
@@ -47,12 +47,13 @@ pub use forms::{CellMarginsForm, CustomPropertiesForm, TableForm, table_grid_pic
 pub use mailings::{ADDRESS_PARTS, FilterRow, NEW_LIST_FIELDS, RecipientFilter, recipient_table, rule_params};
 #[cfg(test)]
 pub(crate) use mailings::{hold_rows, merge_order, recipient_list, visible_recipients};
-pub(crate) use page_setup::PAPER_LABELS;
 #[cfg(test)]
 pub(crate) use page_setup::paper_entry;
+pub(crate) use page_setup::{PAPER_LABELS, page_paper_group};
 #[cfg(test)]
 use paragraph::apply_paragraph;
 use paragraph::{para_fields, paragraph_dialog};
+pub(crate) use styles::{StyleFields, style_fields};
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "dialog", rename_all = "camelCase")]
@@ -187,6 +188,11 @@ pub enum Dialog {
         /// first page (the section's), applied only if changed (#1230).
         odd_even: bool,
         first_page: bool,
+        /// The page's own colour (`settings.pageColor`), as hex; empty for no colour (the
+        /// workspace shows through a page picture or the theme's paper). `page_color_was` as
+        /// opened, so OK only runs the command when it changed.
+        page_color: String,
+        page_color_was: String,
     },
     Link {
         url: String,
@@ -693,7 +699,10 @@ impl Dialog {
                 let size = app.session.doc.styles.resolve_char(Some("Normal"), &Default::default()).size;
                 let grid = (kind, sp.grid_lines_per_page().min(1000), sp.grid_chars_per_line(size).min(1000));
                 let paper = (sp.page_w / crate::options::unit().pt_per_unit(), sp.page_h / crate::options::unit().pt_per_unit());
+                let page_color = app.session.doc.settings.page_color.map(|c| c.hex()).unwrap_or_default();
                 Dialog::PageSetup {
+                    page_color_was: page_color.clone(),
+                    page_color,
                     paper,
                     paper_was: paper,
                     paper_custom: false,
@@ -735,6 +744,12 @@ impl Dialog {
             }
             "newStyle" => Dialog::NewStyle { name: "Style1".into(), based_on: "Normal".into(), back: false },
             "manageStyles" => Dialog::ManageStyles { alphabetical: false, selected: s("style") },
+            // The Modify Style dialog on the caret's style (or Normal): scripts and the control
+            // channel can open it like the Styles pane's context menu does.
+            "modifyStyle" => {
+                let id = if s("style").is_empty() { "Normal".to_string() } else { s("style") };
+                return Dialog::modify_style(app, &id);
+            }
             "newTableStyle" | "modifyTableStyle" => crate::dialogs_table_style::open(app, name)?,
             "commands" => Dialog::Commands { query: String::new(), swallow: true },
             "macros" => Dialog::Macros { name: String::new() },

@@ -14,6 +14,9 @@ impl Session {
         self.note_body_replaced();
         self.bib_style = doc_bib_style(&doc);
         self.doc = doc;
+        // A file that names no language uses the app's proofing default, not English.
+        let tag = self.prefs.default_language.clone().or_else(|| self.editing_lang.clone());
+        super::adopt_default_language(&mut self.doc, tag.as_deref());
         self.doc.ensure_nonempty();
         self.password = None;
         self.file_name = None;
@@ -67,6 +70,8 @@ impl Session {
             doc,
             sel,
             view: _,
+            // App preferences for future documents, not part of this one's edit state.
+            defaults: _,
             pending: _,
             last_highlight: _,
             path: _,

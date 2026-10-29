@@ -12,6 +12,35 @@ fn with_section(f: impl Fn(&mut Value)) -> Value {
 
 /// `layout.pageSetup {section}` checks the values like the dedicated commands do.
 #[test]
+fn a_six_hundred_centimetre_page_is_accepted() {
+    let cm = 72.0 / 2.54;
+    let mut s = doc();
+    let tall = cm * 600.0;
+    s.run(
+        "layout.pageSetup",
+        &with_section(|v| {
+            v["pageW"] = json!(cm * 19.0);
+            v["pageH"] = json!(tall);
+            v["marginTop"] = json!(11.34);
+            v["marginBottom"] = json!(11.34);
+            v["marginLeft"] = json!(11.34);
+            v["marginRight"] = json!(11.34);
+        }),
+    )
+    .unwrap();
+    let got = sect(&s);
+    assert!((got.page_h - tall).abs() < 0.01, "600 cm kept: {}", got.page_h);
+    assert!((got.page_w - cm * 19.0).abs() < 0.01, "the width is untouched");
+
+    // Just past the maximum: clamped to it, not kept and not refused.
+    s.run("layout.pageSetup", &with_section(|v| v["pageH"] = json!(tall + 50.0))).unwrap();
+    assert_eq!(sect(&s).page_h, wordcraft_doc::section::MAX_PAGE_SIDE);
+    // Junk is still refused.
+    assert!(s.run("layout.pageSetup", &with_section(|v| v["pageH"] = json!(f64::INFINITY))).is_err());
+    assert!(s.run("layout.pageSetup", &with_section(|v| v["pageH"] = json!(-1.0))).is_err());
+}
+
+#[test]
 fn page_setup_section_is_validated() {
     let mut s = doc();
     let before = sect(&s);
@@ -91,7 +120,7 @@ fn page_setup_section_is_validated() {
     )
     .unwrap();
     let x = sect(&s);
-    assert_eq!(x.page_w, 1584.0);
+    assert_eq!(x.page_w, wordcraft_doc::section::MAX_PAGE_SIDE, "clamped to 600 cm");
     assert!(x.landscape, "wider than tall is landscape");
     assert_eq!(x.columns.widths.len(), 12);
     assert_eq!(x.columns.count, 12, "the count follows the widths");

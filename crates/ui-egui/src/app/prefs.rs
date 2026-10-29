@@ -20,6 +20,12 @@ impl WordApp {
         ui.read_aloud_skip_citations = self.session.read_aloud.skip_citations;
         ui.dark_page = self.session.view.dark_mode;
         ui.nav_pane = self.session.view.nav_pane;
+        // View › Show preferences: the session's current state is the person's choice.
+        ui.ruler = self.session.view.ruler;
+        ui.gridlines = self.session.view.gridlines;
+        ui.table_gridlines = self.session.view.table_gridlines;
+        ui.marks = self.session.view.marks;
+        ui.defaults = self.session.defaults.clone();
         ui.styles_pane_dock = self.session.view.styles_pane_dock;
         ui.check_spelling = self.session.view.proofing;
         ui.keyboard = self.session.keymap.clone();
@@ -71,6 +77,15 @@ impl WordApp {
         self.session.read_aloud.skip_citations = self.ui.read_aloud_skip_citations;
         self.session.view.dark_mode = self.ui.dark_page;
         self.session.view.nav_pane = self.ui.nav_pane;
+        // View › Show preferences, as the person left them.
+        self.session.view.ruler = self.ui.ruler;
+        self.session.view.gridlines = self.ui.gridlines;
+        self.session.view.table_gridlines = self.ui.table_gridlines;
+        self.session.view.marks = self.ui.marks;
+        // Defaults for new documents: cleaned up, then owned by the session.
+        let mut defaults = std::mem::take(&mut self.ui.defaults);
+        defaults.sanitize();
+        self.session.defaults = defaults;
         self.session.view.styles_pane_dock = self.ui.styles_pane_dock;
         self.session.view.proofing = self.ui.check_spelling;
         // Keys for commands this version doesn't have are dropped.

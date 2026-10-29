@@ -938,15 +938,22 @@ fn paint_pages(pass: PagePaint<'_>) -> PagePaintOutput {
         let band = band_of(visual_sr);
         let painter =
             if band_top <= 0.0 && band_bot >= sr.height() { painter.clone() } else { painter.with_clip_rect(painter.clip_rect().intersect(band)) };
-        // Shadow and paper.
+        // Shadow and paper. The paper under the raster is the document's own page colour
+        // (through the dark page's inversion), so a custom colour doesn't flash white at the
+        // edges while a page or tile is re-rendered.
+        let paper_opts = page_render_options(app, dim_body);
+        let paper = paper_opts.ink(app.session.doc.settings.page_color.unwrap_or(paper_opts.paper));
         painter.rect_filled(visual_sr.translate(vec2(0.0, 2.0)).expand(1.5), 1.0, t.page_shadow);
-        let paper = if dark_page {
-            Color32::from_gray(wordcraft_render::DARK_PAPER)
-        } else if sepia_page {
-            let s = wordcraft_render::SEPIA_PAPER;
-            Color32::from_rgb(s.0, s.1, s.2)
-        } else {
-            Color32::WHITE
+        // The sheet's own colour wins; without one, the read mode's paper (Inverse draws
+        // the dark page, Sepia draws sepia paper, None white) as before.
+        let paper = match app.session.doc.settings.page_color {
+            Some(_) => crate::theme::c32(paper),
+            None if dark_page => Color32::from_gray(wordcraft_render::DARK_PAPER),
+            None if sepia_page => {
+                let s = wordcraft_render::SEPIA_PAPER;
+                Color32::from_rgb(s.0, s.1, s.2)
+            }
+            None => crate::theme::c32(paper),
         };
         painter.rect_filled(visual_sr, 0.0, paper);
         if tiled {
@@ -1004,6 +1011,9 @@ fn paint_pages(pass: PagePaint<'_>) -> PagePaintOutput {
         } else if let Some((_, tex)) = app.canvas.textures.get(&i) {
             painter.image(tex.id(), visual_sr, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
         }
+        // The sheet's edge, drawn over the content: it is what tells a dark page from the
+        // workspace around it (#2572).
+        painter.rect_stroke(visual_sr, 0.0, Stroke::new(1.0, t.page_border), egui::StrokeKind::Inside);
         let page_scale = page_screen_scale(visual_sr, page, geo.scale);
         // Header/footer editing chrome.
         if let StoryRef::Part(id) = app.session.sel.focus.story {

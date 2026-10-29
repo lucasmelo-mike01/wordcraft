@@ -203,8 +203,12 @@ impl Session {
 
     /// A new blank document (the Normal template) on the region's paper: Letter in the US and
     /// other Letter regions, A4 elsewhere (#838). Margins stay 2.54 cm (1") all round.
+    /// A blank document for File › New (and the window's first document): the app's paper for the
+    /// region, then the person's defaults for new documents (styles, page setup, page colour).
     pub fn blank_document(&self) -> Document {
-        blank_document(&self.region())
+        let mut d = blank_document(&self.region());
+        d.apply_defaults(&self.defaults);
+        d
     }
 
     /// The paragraph path the caret is in.

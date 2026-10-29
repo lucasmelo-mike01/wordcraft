@@ -255,6 +255,51 @@ fn proofing_language_options() {
     assert!(s.run("review.language", &json!({"lang": "<script>"})).is_err());
 }
 
+/// File › Options › Language: the review language is a persisted app default; Automatic
+/// follows the interface language, Off turns the live check off, and applying it changes the
+/// open document's default so the squiggles follow at once.
+#[test]
+fn review_language_default_is_applied_and_persisted() {
+    let mut s = Session::new(Document::from_text("Texto"));
+    s.set_editing_language(Some("pt-BR"));
+    let r = s.run("review.defaultLanguage", &json!({"value": "auto"})).unwrap();
+    assert_eq!((r["value"].as_str(), r["resolved"].as_str()), (Some("auto"), Some("pt-BR")));
+    assert_eq!(s.doc.styles.default_chr.lang.as_deref(), Some("pt-BR"));
+    assert!(s.view.proofing && s.prefs.default_language.is_none());
+
+    let r = s.run("review.defaultLanguage", &json!({"value": "pt-br"})).unwrap();
+    assert_eq!(r["resolved"], "pt-BR");
+    assert_eq!(s.prefs.default_language.as_deref(), Some("pt-BR"));
+
+    let r = s.run("review.defaultLanguage", &json!({"value": "off"})).unwrap();
+    assert_eq!(r["value"], "off");
+    assert!(!s.view.proofing && !s.prefs.check_spelling);
+    assert_eq!(s.prefs.default_language.as_deref(), Some("pt-BR"), "Off keeps the language saved");
+    assert_eq!(s.run("review.defaultLanguage", &json!({})).unwrap()["value"], "off");
+
+    assert!(s.run("review.defaultLanguage", &json!({"value": "<script>"})).is_err());
+    let r = s.run("review.defaultLanguage", &json!({"value": "en-US"})).unwrap();
+    assert_eq!(r["resolved"], "en-US");
+    assert!(s.view.proofing && s.prefs.check_spelling, "choosing a language checks it again");
+    assert_eq!(s.doc.styles.default_chr.lang.as_deref(), Some("en-US"));
+}
+
+/// A document that names no language adopts the app's proofing default when opened; a
+/// document that names its own keeps it.
+#[test]
+fn documents_without_a_language_adopt_the_proofing_default() {
+    let mut s = Session::new(Document::from_text(""));
+    s.set_editing_language(Some("pt-BR"));
+    let mut plain = Document::from_text("Sem idioma");
+    plain.styles.default_chr.lang = None;
+    s.set_document(plain);
+    assert_eq!(s.doc.styles.default_chr.lang.as_deref(), Some("pt-BR"));
+    let mut english = Document::from_text("With language");
+    english.styles.default_chr.lang = Some("en-US".into());
+    s.set_document(english);
+    assert_eq!(s.doc.styles.default_chr.lang.as_deref(), Some("en-US"), "its own language wins");
+}
+
 /// The inspector's removals delete straight from the document, so they aren't tracked: on a
 /// document that tracks changes the text would go with no revision to show for it, and the
 /// revision trail would be broken behind the user's back. The removal is refused instead,

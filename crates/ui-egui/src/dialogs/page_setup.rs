@@ -1,4 +1,4 @@
-use super::{MeasureExt, Ui, Value, WordApp, json, semibold};
+use super::{MeasureExt, Tokens, Ui, Value, WordApp, json, semibold, vec2};
 
 /// Labels of Page Setup's paper size (#1433), in one place in case Word's wording differs.
 pub(crate) const PAPER_LABELS: PaperLabels =
@@ -79,7 +79,7 @@ pub(super) fn run_as_one_step(app: &mut WordApp, commands: Vec<(&str, Value)>) -
 /// Page Setup's Paper group (#1433): a Paper size list (the named sizes and Custom size) and
 /// the width and height. The fields follow the orientation (the wide side is the width in
 /// landscape), and a typed size that is wider than tall turns the orientation to landscape.
-pub(super) fn page_paper_group(ui: &mut Ui, paper: &mut (f32, f32), landscape: &mut bool, custom: &mut bool) {
+pub(crate) fn page_paper_group(ui: &mut Ui, paper: &mut (f32, f32), landscape: &mut bool, custom: &mut bool) {
     if (*landscape && paper.0 < paper.1) || (!*landscape && paper.0 > paper.1) {
         *paper = (paper.1, paper.0);
     }
@@ -148,4 +148,47 @@ pub(super) fn page_valign_value(v: wordcraft_doc::section::PageVAlign) -> &'stat
         PageVAlign::Justify => "justify",
         PageVAlign::Bottom => "bottom",
     }
+}
+
+/// Page Setup › Page Color: the sheet's own colour (the document's `settings.pageColor`), with
+/// the palette, a hex field and RGB values; empty means no colour, and the page picture or the
+/// theme's paper shows instead. It is a document property, independent of the interface theme.
+pub(crate) fn page_color_group(ui: &mut Ui, theme: &[wordcraft_doc::Rgb], value: &mut String) {
+    let t = Tokens::get(ui.ctx());
+    ui.horizontal(|ui| {
+        super::chrome::color_field(ui, theme, value, "No Color", "");
+        let c = wordcraft_doc::Rgb::parse(value);
+        // Preview: the sheet as it will be painted, and a crossed swatch for no colour.
+        let (r, _) = ui.allocate_exact_size(vec2(28.0, 18.0), egui::Sense::hover());
+        match c {
+            Some(c) => {
+                ui.painter().rect_filled(r, 2.0, crate::theme::c32(c));
+            }
+            None => {
+                ui.painter().rect_filled(r, 2.0, egui::Color32::WHITE);
+                ui.painter().line_segment([r.left_bottom(), r.right_top()], egui::Stroke::new(1.0, t.text_dim));
+            }
+        }
+        ui.painter().rect_stroke(r, 2.0, egui::Stroke::new(1.0, t.border_strong), egui::StrokeKind::Inside);
+    });
+    ui.horizontal(|ui| {
+        let hex_label = ui.label(tl!("Hex:"));
+        ui.label("#");
+        ui.add(egui::TextEdit::singleline(value).desired_width(76.0).char_limit(8)).labelled_by(hex_label.id);
+        if let Some(c) = wordcraft_doc::Rgb::parse(value) {
+            let mut rgb = [c.0, c.1, c.2];
+            let mut changed = false;
+            for (label, v) in ["Red:", "Green:", "Blue:"].into_iter().zip(rgb.iter_mut()) {
+                ui.label(tl!(label));
+                changed |= ui.add(egui::DragValue::new(v).range(0..=255).speed(1.0)).changed();
+            }
+            if changed {
+                *value = wordcraft_doc::Rgb(rgb[0], rgb[1], rgb[2]).hex();
+            }
+        } else {
+            // Nothing to show for a half-typed or invalid hex: the sheet keeps no colour until
+            // the field parses, and OK stays disabled (see the dialog's OK).
+            ui.label(tl!("No Color")).on_hover_text(value.as_str());
+        }
+    });
 }
