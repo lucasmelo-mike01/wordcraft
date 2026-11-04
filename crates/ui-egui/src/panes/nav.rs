@@ -5,8 +5,9 @@ use super::{Counters, Document, LevelSuffix, NumFormat, Path, Pos, StoryRef, Str
 /// node of level 0 sits at x=18, a 16 px step per level (level 1 at 34, level 2 at 50), the badge
 /// of a parent 12 px after its node, a 14 px icon square and a 6 px gap after it. The elbow is a
 /// quadratic of radius 8 (the SVG's Q 18 96 26 96 L 30 96).
-const NAV_TRUNK_WIDTH: f32 = 1.3;
-const NAV_TRUNK_ACTIVE_WIDTH: f32 = 1.6;
+/// +25% thickness applied for enhanced finish and high-DPI clarity.
+const NAV_TRUNK_WIDTH: f32 = 1.6;
+const NAV_TRUNK_ACTIVE_WIDTH: f32 = 2.0;
 const NAV_ROW_HEIGHT: f32 = 26.0;
 /// From the right of the node slot (or the indent, for a leaf) to the keycap badge/label.
 const NAV_CONTENT_GAP: f32 = 6.0;
@@ -69,7 +70,7 @@ struct NavCurve {
     active: bool,
 }
 
-/// A parent row's circular chevron node.
+/// A parent row's circular chevron node with 3D finish.
 #[derive(Clone, Debug, PartialEq)]
 struct NavNode {
     centre: egui::Pos2,
@@ -113,13 +114,18 @@ fn nav_row_geometry(
         let top = mid - h * 0.5;
         g.pill = Some(egui::Rect::from_min_max(egui::pos2(content_x - NAV_PILL_INSET, top), egui::pos2(row.right() - 13.0, top + h)));
     }
-    // A parent's circular chevron node sits on its own column's trunk; the trunk goes through it
-    // (entering above, leaving below), never across the chevron.
+    // A parent's circular chevron node sits on its own column's trunk.
+    // If it has a guide at its own level running from above, the trunk enters from above.
+    // Only if expanded does a trunk leave its base downwards to connect to its children.
     if let Some(expanded) = collapsed.map(|c| !c) {
         let centre = egui::pos2(left + nav_node_x(level), mid);
         let stroke_active = active;
-        g.trunks.push(NavTrunk { x: centre.x, top: row.top(), bottom: centre.y - radius, active: stroke_active });
-        g.trunks.push(NavTrunk { x: centre.x, top: centre.y + radius, bottom: row.bottom(), active: stroke_active });
+        if guides.contains(&level) {
+            g.trunks.push(NavTrunk { x: centre.x, top: row.top(), bottom: centre.y - radius, active: stroke_active });
+        }
+        if expanded {
+            g.trunks.push(NavTrunk { x: centre.x, top: centre.y + radius, bottom: row.bottom(), active: stroke_active });
+        }
         g.node = Some(NavNode { centre, radius, expanded, active });
     }
     // Trunks of every ancestor level; the innermost one ends at the curve when it is the last
@@ -128,16 +134,19 @@ fn nav_row_geometry(
         let curve = nav_curve_radius(innermost);
         let draw_curve = style == NavTreeStyle::FleetConnected || active;
         for &a in guides {
+            if a == level && g.node.is_some() {
+                continue; // Handled directly above on the node
+            }
             let lit = active_guides.contains(&a);
             let bottom = if last && a == innermost && draw_curve { mid - curve } else { row.bottom() };
             g.trunks.push(NavTrunk { x: left + nav_node_x(a), top: row.top(), bottom, active: lit });
         }
         if draw_curve {
             let x = left + nav_node_x(innermost);
-            // A parent's elbow reaches its node (SVG: curve to x=30 for the node at 34); a leaf's
-            // elbow reaches the pill (SVG 48) or stops 3 px before its badge/emoji.
+            // A parent's elbow reaches the circle edge; a leaf's elbow reaches the selection pill
+            // or stops 3 px before its badge/emoji.
             let horizontal_end = match &g.node {
-                Some(node) => node.centre.x - 4.0,
+                Some(node) => node.centre.x - node.radius,
                 None if selected => content_x - NAV_PILL_INSET,
                 None => content_x - 3.0,
             };
@@ -256,7 +265,6 @@ fn paint_emoji(ui: &Ui, painter: &egui::Painter, pos: egui::Pos2, galley: &egui:
         let Some(first) = text.get(s..e).and_then(|c| c.chars().next()) else { continue };
         // One glyph per drawn character, in order: the cluster's first character finds its box.
         let Some(g) = glyphs.find(|g| g.chr == first) else { continue };
-        let baseline = pos.y + g.pos.y;
         // One icon column, as in the mockup: every emoji fits a 14 px box (height) and can never
         // be wider than its slot (advance + the explicit gap), so a wide emoji neither swells nor
         // touches the following letter; the dominant dimension is capped, so sizes match.
@@ -273,7 +281,7 @@ fn paint_emoji(ui: &Ui, painter: &egui::Painter, pos: egui::Pos2, galley: &egui:
             w = slot_w;
             h = w / aspect;
         }
-        let top = baseline - h * 0.86;
+        let top = (pos.y + (galley.size().y - h) * 0.5).max(pos.y);
         let rect = egui::Rect::from_min_size(egui::pos2(pos.x + g.pos.x, top), vec2(w, h));
         painter.image(tex.id(), rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
     }
@@ -343,23 +351,46 @@ fn paint_nav_geometry(painter: &egui::Painter, g: &NavGeometry, t: &Tokens) {
         }
     }
     if let Some(node) = &g.node {
-        let (fill, border, chevron) = if node.active {
-            (t.nav_node_fill_active, t.nav_node_border_active, t.nav_chevron_active)
-        } else {
-            (t.nav_node_fill, t.nav_node_border, t.nav_chevron)
-        };
-        painter.circle_filled(node.centre, node.radius, fill);
-        painter.circle_stroke(node.centre, node.radius, Stroke::new(if node.active { 1.35 } else { 1.2 }, border));
-        let (c, half) = (node.centre, node.radius);
-        let stroke = Stroke::new(1.5, chevron);
-        let pts = if node.expanded {
-            [egui::pos2(c.x - half * 0.55, c.y - half * 0.25), egui::pos2(c.x, c.y + half * 0.35), egui::pos2(c.x + half * 0.55, c.y - half * 0.25)]
-        } else {
-            [egui::pos2(c.x - half * 0.25, c.y - half * 0.55), egui::pos2(c.x + half * 0.35, c.y), egui::pos2(c.x - half * 0.25, c.y + half * 0.55)]
-        };
-        painter.line_segment([pts[0], pts[1]], stroke);
-        painter.line_segment([pts[1], pts[2]], stroke);
+        draw_expand_button(painter, node, t);
     }
+}
+
+/// Draw a circular expand/collapse button with subtle 3D depth and a crisp vector chevron.
+fn draw_expand_button(painter: &egui::Painter, node: &NavNode, t: &Tokens) {
+    let (fill, border) = if node.active { (t.nav_node_fill_active, t.nav_node_border_active) } else { (t.nav_node_fill, t.nav_node_border) };
+    painter.circle_filled(node.centre, node.radius, fill);
+    painter.circle_stroke(node.centre, node.radius, Stroke::new(if node.active { 1.35 } else { 1.2 }, border));
+
+    // Subtle 3D depth: top crescent reflection and bottom shadow
+    let highlight = Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(255, 255, 255, if node.active { 75 } else { 40 }));
+    let shadow = Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 75));
+    painter.line_segment(
+        [
+            egui::pos2(node.centre.x - node.radius * 0.55, node.centre.y - node.radius * 0.45),
+            egui::pos2(node.centre.x + node.radius * 0.55, node.centre.y - node.radius * 0.45),
+        ],
+        highlight,
+    );
+    painter.line_segment(
+        [
+            egui::pos2(node.centre.x - node.radius * 0.5, node.centre.y + node.radius * 0.6),
+            egui::pos2(node.centre.x + node.radius * 0.5, node.centre.y + node.radius * 0.6),
+        ],
+        shadow,
+    );
+
+    // Chevron vetorial nítido (linha contínua conectada)
+    let c = node.centre;
+    let stroke = Stroke::new(1.5, egui::Color32::WHITE);
+    let pts = if node.expanded {
+        // Apontando para baixo (v)
+        [egui::pos2(c.x - 3.2, c.y - 1.2), egui::pos2(c.x, c.y + 2.0), egui::pos2(c.x + 3.2, c.y - 1.2)]
+    } else {
+        // Apontando para a direita (>)
+        [egui::pos2(c.x - 1.2, c.y - 3.2), egui::pos2(c.x + 2.0, c.y), egui::pos2(c.x - 1.2, c.y + 3.2)]
+    };
+    painter.line_segment([pts[0], pts[1]], stroke);
+    painter.line_segment([pts[1], pts[2]], stroke);
 }
 
 /// One heading in the pane: the trunk/elbow/node geometry, the keycap badge, the emoji and the
@@ -400,7 +431,7 @@ pub(super) fn nav_heading(
     paint_nav_geometry(&painter, &geometry, &t);
     if let Some(pill) = geometry.pill {
         painter.rect_filled(pill, 6.0, t.nav_pill_fill);
-        painter.rect_stroke(pill, 6.0, Stroke::new(1.2, t.nav_pill_border), egui::StrokeKind::Inside);
+        painter.rect_stroke(pill, 6.0, Stroke::new(1.0, t.nav_pill_border), egui::StrokeKind::Inside);
     } else if hovered {
         let hover = egui::Rect::from_min_max(
             egui::pos2(row.left() - NAV_PANE_TRIM + content_x - NAV_PILL_INSET, row.center().y - row_h * 0.5),
@@ -409,9 +440,22 @@ pub(super) fn nav_heading(
         painter.rect_filled(hover, 6.0, ui.visuals().widgets.hovered.weak_bg_fill);
     }
 
-    // The label: text, with the emoji laid out transparent so their colour images can sit on top.
-    let font = if active || selected { semibold(12.0) } else { regular(12.0) };
-    let ink = egui::TextFormat { font_id: font.clone(), color: ui.visuals().text_color(), ..Default::default() };
+    // The label: hierarchy, contrast, and emoji laid out transparent so their colour images sit on top.
+    let font = if level <= 1 && (active || collapsed == Some(false)) {
+        semibold(12.5)
+    } else if selected {
+        semibold(12.0)
+    } else {
+        regular(12.0)
+    };
+    let text_color = if selected {
+        egui::Color32::WHITE
+    } else if level <= 1 {
+        egui::Color32::from_rgb(0xF8, 0xFA, 0xFC)
+    } else {
+        egui::Color32::from_rgb(0xD1, 0xD5, 0xDB)
+    };
+    let ink = egui::TextFormat { font_id: font.clone(), color: text_color, ..Default::default() };
     // The emoji placeholder keeps the regular metrics (bold would change its advance and crowd
     // the next letter), plus an explicit gap that the image can use without reaching the text.
     let clear = egui::TextFormat { font_id: regular(12.0), color: egui::Color32::TRANSPARENT, ..Default::default() };

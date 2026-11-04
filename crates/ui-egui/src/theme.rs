@@ -466,7 +466,7 @@ impl Tokens {
             nav_chevron_active: Color32::from_rgb(0x93, 0xC5, 0xFD),
             nav_curve: Color32::from_rgb(0x64, 0x74, 0x8B),
             nav_curve_active: Color32::from_rgb(0x60, 0xA5, 0xFA),
-            nav_pill_fill: Color32::from_rgba_unmultiplied(0x1D, 0x4E, 0xD8, 0x73),
+            nav_pill_fill: Color32::from_rgba_unmultiplied(0x1D, 0x4E, 0xD8, 0xD8),
             nav_pill_border: Color32::from_rgb(0x3B, 0x82, 0xF6),
             nav_badge: Color32::from_rgb(0x47, 0x55, 0x69),
             nav_badge_active: Color32::from_rgb(0x3B, 0x82, 0xF6),
