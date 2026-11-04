@@ -5237,30 +5237,33 @@ fn interface_theme_migrates_and_survives_a_restart() {
 fn navigation_tree_style_command_persists_and_tolerates_unknown_values() {
     use crate::panes::NavTreeStyle;
     let mut a = app();
-    assert_eq!(a.run("ui.navTreeStyle", json!({})).unwrap(), json!({"value": "zed_linear"}));
+    assert_eq!(a.run("ui.navTreeStyle", json!({})).unwrap(), json!({"value": "fleet_connected"}));
     assert!(!a.prefs_dirty, "reading the style is not a change");
     assert_eq!(a.run("ui.navTreeStyle", json!({"value": "fleet_connected"})).unwrap(), json!({"value": "fleet_connected"}));
     assert_eq!(a.ui.nav_tree_style, NavTreeStyle::FleetConnected);
+    assert!(!a.prefs_dirty, "the same value doesn't dirty prefs");
+    assert_eq!(a.run("ui.navTreeStyle", json!({"value": "zed_linear"})).unwrap(), json!({"value": "zed_linear"}));
+    assert_eq!(a.ui.nav_tree_style, NavTreeStyle::ZedLinear);
     assert!(a.prefs_dirty, "the host writes ui.json at once");
     a.prefs_dirty = false;
     assert!(a.run("ui.navTreeStyle", json!({"value": "sepia"})).is_err());
-    assert_eq!(a.ui.nav_tree_style, NavTreeStyle::FleetConnected, "a rejected value keeps the setting");
+    assert_eq!(a.ui.nav_tree_style, NavTreeStyle::ZedLinear, "a rejected value keeps the setting");
     assert!(!a.prefs_dirty);
     let saved = serde_json::to_string(&a.prefs()).unwrap();
-    assert!(saved.contains(r#""navTreeStyle":"fleet_connected""#), "{saved}");
+    assert!(saved.contains(r#""navTreeStyle":"zed_linear""#), "{saved}");
     let mut b = app();
     b.apply_prefs(serde_json::from_str(&saved).unwrap());
-    assert_eq!(b.ui.nav_tree_style, NavTreeStyle::FleetConnected);
+    assert_eq!(b.ui.nav_tree_style, NavTreeStyle::ZedLinear);
     // The pane's ▾ menu and Options both go through this helper.
     let mut c = app();
-    crate::panes::set_nav_tree_style(&mut c, NavTreeStyle::FleetConnected);
-    assert_eq!(c.ui.nav_tree_style, NavTreeStyle::FleetConnected);
+    crate::panes::set_nav_tree_style(&mut c, NavTreeStyle::ZedLinear);
+    assert_eq!(c.ui.nav_tree_style, NavTreeStyle::ZedLinear);
     assert!(c.prefs_dirty);
-    // An old preferences file (no key) and an unknown value keep A and the rest of the file.
+    // An old preferences file (no key) and an unknown value keep default (Option B) and the rest of the file.
     let old: crate::UiState = serde_json::from_str(r#"{"tab": "Insert"}"#).unwrap();
-    assert_eq!((old.nav_tree_style, old.tab.as_str()), (NavTreeStyle::ZedLinear, "Insert"));
+    assert_eq!((old.nav_tree_style, old.tab.as_str()), (NavTreeStyle::FleetConnected, "Insert"));
     let odd: crate::UiState = serde_json::from_str(r#"{"navTreeStyle": "sepia", "tab": "Insert"}"#).unwrap();
-    assert_eq!((odd.nav_tree_style, odd.tab.as_str()), (NavTreeStyle::ZedLinear, "Insert"));
+    assert_eq!((odd.nav_tree_style, odd.tab.as_str()), (NavTreeStyle::FleetConnected, "Insert"));
 }
 
 /// #1861: the registered Interface Theme command drives the same setting as Options:

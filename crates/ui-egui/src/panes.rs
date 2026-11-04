@@ -50,11 +50,11 @@ pub(crate) use state::{lenient_order, lenient_places};
 pub enum NavTreeStyle {
     /// Option A (Zed / Linear): continuous trunks and a circular chevron node per parent; the
     /// blue elbow appears only on the active branch and on the selected row's pill.
-    #[default]
     #[serde(rename = "zed_linear")]
     ZedLinear,
     /// Option B (Fleet / Craft Pro): every child has a connecting elbow; nested trunks end on the
     /// last child's curve, while a root rail runs on to the next root.
+    #[default]
     #[serde(rename = "fleet_connected")]
     FleetConnected,
 }

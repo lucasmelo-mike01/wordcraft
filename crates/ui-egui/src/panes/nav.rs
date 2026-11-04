@@ -144,11 +144,11 @@ fn nav_row_geometry(
         if draw_curve {
             let x = left + nav_node_x(innermost);
             // A parent's elbow reaches the circle edge; a leaf's elbow reaches the selection pill
-            // or stops 3 px before its badge/emoji.
+            // or connects directly to its badge/emoji without gaps.
             let horizontal_end = match &g.node {
                 Some(node) => node.centre.x - node.radius,
                 None if selected => content_x - NAV_PILL_INSET,
-                None => content_x - 3.0,
+                None => content_x,
             };
             if horizontal_end > x {
                 g.curves.push(NavCurve {
@@ -721,9 +721,9 @@ mod tests {
         assert!((curve.start.y - (mid - nav_curve_radius(1))).abs() < 0.01, "starts above the middle");
         assert_eq!(curve.start.x, row.left() - NAV_PANE_TRIM + nav_node_x(1), "starts on the trunk");
         assert!(curve.control.y > curve.start.y && curve.control.y == mid, "the quadratic control is on the middle line");
-        assert!(curve.end.x > curve.start.x, "turns right");
+        assert!(curve.end.x > curve.start.x);
         assert_eq!(curve.end.y, mid);
-        assert_eq!(curve.horizontal_end, g.content_x - 3.0, "a leaf's elbow stops before its badge");
+        assert_eq!(curve.horizontal_end, g.content_x, "a leaf's elbow connects directly to its badge");
     }
 
     /// The active curve ends exactly on the selection pill's left border.
@@ -789,16 +789,16 @@ mod tests {
     }
 
     /// The style is persisted as `navTreeStyle`; an old file (no key) or an unknown value loads as
-    /// Option A without dropping the rest of the preferences.
+    /// Option B (default) without dropping the rest of the preferences.
     #[test]
     fn the_saved_style_defaults_to_a_and_tolerates_unknown_values() {
-        assert_eq!(NavTreeStyle::default(), NavTreeStyle::ZedLinear);
+        assert_eq!(NavTreeStyle::default(), NavTreeStyle::FleetConnected);
         assert_eq!(NavTreeStyle::from_code("fleet_connected"), Some(NavTreeStyle::FleetConnected));
         assert_eq!(NavTreeStyle::from_code("sepia"), None);
         let old: crate::UiState = serde_json::from_str(r#"{"tab":"Insert"}"#).unwrap();
-        assert_eq!(old.nav_tree_style, NavTreeStyle::ZedLinear);
+        assert_eq!(old.nav_tree_style, NavTreeStyle::FleetConnected);
         let odd: crate::UiState = serde_json::from_str(r#"{"navTreeStyle":"sepia","tab":"Insert"}"#).unwrap();
-        assert_eq!(odd.nav_tree_style, NavTreeStyle::ZedLinear);
+        assert_eq!(odd.nav_tree_style, NavTreeStyle::FleetConnected);
         assert_eq!(odd.tab, "Insert");
     }
 }
