@@ -318,6 +318,8 @@ mod navigation_tests {
                                 false,
                                 &[],
                                 super::NavTreeStyle::ZedLinear,
+                                false,
+                                false,
                             )
                             .1
                         })
@@ -365,7 +367,21 @@ mod navigation_tests {
             let mut panel_left = 0.0;
             let output = ctx.run_ui(egui::RawInput { screen_rect: Some(screen), ..Default::default() }, |ui| {
                 let result = egui::Panel::left("navigation_test").default_size(260.0).show(ui, |ui| {
-                    nav_heading(ui, egui::Id::unique("t2"), level, "Kilns", false, None, &[], true, false, &[], super::NavTreeStyle::ZedLinear)
+                    nav_heading(
+                        ui,
+                        egui::Id::unique("t2"),
+                        level,
+                        "Kilns",
+                        false,
+                        None,
+                        &[],
+                        true,
+                        false,
+                        &[],
+                        super::NavTreeStyle::ZedLinear,
+                        false,
+                        false,
+                    )
                 });
                 panel_left = result.response.rect.min.x;
             });

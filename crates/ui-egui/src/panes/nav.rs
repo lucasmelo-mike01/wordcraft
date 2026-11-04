@@ -91,6 +91,7 @@ struct NavGeometry {
 
 /// The geometry of one heading row (pure): trunks, the curved elbow, the chevron node and the
 /// selection pill. `style` decides whether an inactive leaf gets its own elbow (B) or not (A).
+/// `has_root_above` and `has_root_below` ensure the root rail (level 0) connects consecutive roots.
 #[allow(clippy::too_many_arguments)]
 fn nav_row_geometry(
     row: egui::Rect,
@@ -102,6 +103,8 @@ fn nav_row_geometry(
     style: NavTreeStyle,
     collapsed: Option<bool>,
     selected: bool,
+    has_root_above: bool,
+    has_root_below: bool,
 ) -> NavGeometry {
     let mid = row.center().y;
     let left = row.left() - NAV_PANE_TRIM;
@@ -115,21 +118,23 @@ fn nav_row_geometry(
         g.pill = Some(egui::Rect::from_min_max(egui::pos2(content_x - NAV_PILL_INSET, top), egui::pos2(row.right() - 13.0, top + h)));
     }
     // A parent's circular chevron node sits on its own column's trunk.
-    // If it has a guide at its own level running from above, the trunk enters from above.
-    // Only if expanded does a trunk leave its base downwards to connect to its children.
+    // If it has a guide at its own level running from above, or if it is a root with another root above,
+    // the trunk enters from above.
+    // Only if expanded (or if it is a root with another root below) does a trunk leave its base downwards.
     if let Some(expanded) = collapsed.map(|c| !c) {
         let centre = egui::pos2(left + nav_node_x(level), mid);
         let stroke_active = active;
-        if guides.contains(&level) {
+        if guides.contains(&level) || (level == 0 && has_root_above) {
             g.trunks.push(NavTrunk { x: centre.x, top: row.top(), bottom: centre.y - radius, active: stroke_active });
         }
-        if expanded {
+        if expanded || (level == 0 && has_root_below) {
             g.trunks.push(NavTrunk { x: centre.x, top: centre.y + radius, bottom: row.bottom(), active: stroke_active });
         }
         g.node = Some(NavNode { centre, radius, expanded, active });
     }
     // Trunks of every ancestor level; the innermost one ends at the curve when it is the last
     // child (no loose end below it) and the row has an elbow.
+    // The outer root rail (level 0) continues through to the bottom as long as another root exists below.
     if let Some(innermost) = guides.last().copied() {
         let curve = nav_curve_radius(innermost);
         let draw_curve = style == NavTreeStyle::FleetConnected || active;
@@ -138,7 +143,7 @@ fn nav_row_geometry(
                 continue; // Handled directly above on the node
             }
             let lit = active_guides.contains(&a);
-            let bottom = if last && a == innermost && draw_curve { mid - curve } else { row.bottom() };
+            let bottom = if last && a == innermost && draw_curve && (a > 0 || !has_root_below) { mid - curve } else { row.bottom() };
             g.trunks.push(NavTrunk { x: left + nav_node_x(a), top: row.top(), bottom, active: lit });
         }
         if draw_curve {
@@ -408,6 +413,8 @@ pub(super) fn nav_heading(
     active: bool,
     active_guides: &[u8],
     style: NavTreeStyle,
+    has_root_above: bool,
+    has_root_below: bool,
 ) -> (bool, egui::Response) {
     let t = Tokens::get(ui.ctx());
     let row_h = NAV_ROW_HEIGHT;
@@ -426,7 +433,7 @@ pub(super) fn nav_heading(
 
     let (row, _) = ui.allocate_exact_size(vec2(row_w, row_h), egui::Sense::hover());
     let hovered = ui.ctx().read_response(id).is_some_and(|r| r.hovered());
-    let geometry = nav_row_geometry(row, level, guides, last, active, active_guides, style, collapsed, selected);
+    let geometry = nav_row_geometry(row, level, guides, last, active, active_guides, style, collapsed, selected, has_root_above, has_root_below);
     let painter = ui.painter().with_clip_rect(ui.clip_rect().expand2(vec2(NAV_PANE_TRIM, 0.0)));
     paint_nav_geometry(&painter, &geometry, &t);
     if let Some(pill) = geometry.pill {
@@ -625,6 +632,8 @@ pub(super) fn nav(app: &mut WordApp, ui: &mut Ui) {
                     // chain and which lies above (or at) the selected row.
                     let active_guides = branch_guide_levels(&ancestors, &chain, &levels, i, current_index);
                     let on_chain = chain.contains(&i);
+                    let has_root_above = items.iter().enumerate().take(i).any(|(j, (_, l, _))| visible[j] && *l == 0);
+                    let has_root_below = items.iter().enumerate().skip(i + 1).any(|(j, (_, l, _))| visible[j] && *l == 0);
                     let (toggle, r) = nav_heading(
                         ui,
                         row_id,
@@ -637,6 +646,8 @@ pub(super) fn nav(app: &mut WordApp, ui: &mut Ui) {
                         on_chain,
                         &active_guides,
                         tree_style,
+                        has_root_above,
+                        has_root_below,
                     );
                     if toggle {
                         if !app.ui.nav_collapsed.remove(path) {
@@ -715,7 +726,7 @@ mod tests {
     #[test]
     fn the_curve_starts_above_the_row_and_turns_right() {
         let row = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(300.0, NAV_ROW_HEIGHT));
-        let g = nav_row_geometry(row, 2, &[0, 1], false, true, &[0, 1], NavTreeStyle::ZedLinear, None, false);
+        let g = nav_row_geometry(row, 2, &[0, 1], false, true, &[0, 1], NavTreeStyle::ZedLinear, None, false, false, false);
         let curve = g.curves.first().expect("an active row has its elbow");
         let mid = row.center().y;
         assert!((curve.start.y - (mid - nav_curve_radius(1))).abs() < 0.01, "starts above the middle");
@@ -730,7 +741,7 @@ mod tests {
     #[test]
     fn the_curve_meets_the_selection_pill() {
         let row = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(300.0, NAV_ROW_HEIGHT));
-        let g = nav_row_geometry(row, 2, &[0, 1], false, true, &[0, 1], NavTreeStyle::ZedLinear, None, true);
+        let g = nav_row_geometry(row, 2, &[0, 1], false, true, &[0, 1], NavTreeStyle::ZedLinear, None, true, false, false);
         let pill = g.pill.expect("the selected row has a pill");
         let curve = g.curves.first().expect("the selected row has its elbow");
         assert!((pill.left() - curve.horizontal_end).abs() < 0.01, "{} vs {}", pill.left(), curve.horizontal_end);
@@ -743,8 +754,8 @@ mod tests {
     fn consecutive_rows_have_no_gap_in_the_trunk() {
         let a = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(300.0, NAV_ROW_HEIGHT));
         let b = a.translate(vec2(0.0, NAV_ROW_HEIGHT));
-        let ga = nav_row_geometry(a, 2, &[0, 1], false, false, &[], NavTreeStyle::FleetConnected, None, false);
-        let gb = nav_row_geometry(b, 2, &[0, 1], false, false, &[], NavTreeStyle::FleetConnected, None, false);
+        let ga = nav_row_geometry(a, 2, &[0, 1], false, false, &[], NavTreeStyle::FleetConnected, None, false, false, false);
+        let gb = nav_row_geometry(b, 2, &[0, 1], false, false, &[], NavTreeStyle::FleetConnected, None, false, false, false);
         let ta = ga.trunks.iter().find(|t| (t.x - (a.left() - NAV_PANE_TRIM + nav_node_x(0))).abs() < 0.01).expect("the outer trunk");
         let tb = gb.trunks.iter().find(|t| (t.x - (b.left() - NAV_PANE_TRIM + nav_node_x(0))).abs() < 0.01).expect("the outer trunk");
         assert!(trunk_has_no_gap(ta, tb));
@@ -755,7 +766,7 @@ mod tests {
     #[test]
     fn the_trunk_enters_and_leaves_the_node_without_crossing_it() {
         let row = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(300.0, NAV_ROW_HEIGHT));
-        let g = nav_row_geometry(row, 1, &[0], true, true, &[0], NavTreeStyle::ZedLinear, Some(false), false);
+        let g = nav_row_geometry(row, 1, &[0], true, true, &[0], NavTreeStyle::ZedLinear, Some(false), false, false, false);
         let node = g.node.expect("a parent has a node");
         assert!(g.trunks.iter().any(|t| (t.x - node.centre.x).abs() < 0.01 && t.bottom + 0.01 >= node.centre.y - node.radius));
         assert!(g.trunks.iter().any(|t| (t.x - node.centre.x).abs() < 0.01 && t.top <= node.centre.y + node.radius + 0.01));
@@ -768,9 +779,9 @@ mod tests {
     #[test]
     fn option_a_has_no_inactive_elbows_and_option_b_connects_every_child() {
         let row = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(300.0, NAV_ROW_HEIGHT));
-        let a = nav_row_geometry(row, 2, &[0, 1], false, false, &[], NavTreeStyle::ZedLinear, None, false);
+        let a = nav_row_geometry(row, 2, &[0, 1], false, false, &[], NavTreeStyle::ZedLinear, None, false, false, false);
         assert!(a.curves.is_empty(), "A: an inactive leaf has no comb teeth");
-        let b = nav_row_geometry(row, 2, &[0, 1], false, false, &[], NavTreeStyle::FleetConnected, None, false);
+        let b = nav_row_geometry(row, 2, &[0, 1], false, false, &[], NavTreeStyle::FleetConnected, None, false, false, false);
         let curve = b.curves.first().expect("B: every child is connected");
         assert!(!curve.active, "an inactive child's elbow is grey");
         assert_eq!(b.pill, None);
@@ -781,11 +792,23 @@ mod tests {
     #[test]
     fn option_b_ends_the_nested_trunk_on_the_last_curve() {
         let row = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(300.0, NAV_ROW_HEIGHT));
-        let g = nav_row_geometry(row, 2, &[0, 1], true, false, &[], NavTreeStyle::FleetConnected, None, false);
+        let g = nav_row_geometry(row, 2, &[0, 1], true, false, &[], NavTreeStyle::FleetConnected, None, false, false, true);
         let inner = g.trunks.iter().find(|t| (t.x - (row.left() - NAV_PANE_TRIM + nav_node_x(1))).abs() < 0.01).expect("inner trunk");
         let outer = g.trunks.iter().find(|t| (t.x - (row.left() - NAV_PANE_TRIM + nav_node_x(0))).abs() < 0.01).expect("root rail");
         assert!((inner.bottom - (row.center().y - nav_curve_radius(1))).abs() < 0.01, "no loose end below the last child");
         assert!((outer.bottom - row.bottom()).abs() < 0.01, "the root rail goes on to the next root");
+    }
+
+    /// The root rail (level 0) connects consecutive roots: root 2 gets an incoming trunk from above
+    /// and an outgoing trunk below, and children between roots keep the root rail continuous.
+    #[test]
+    fn root_rail_connects_consecutive_roots() {
+        let row = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(300.0, NAV_ROW_HEIGHT));
+        // Root 2 (has root 1 above, and root 3 below):
+        let r2 = nav_row_geometry(row, 0, &[], false, false, &[], NavTreeStyle::FleetConnected, Some(false), false, true, true);
+        let node = r2.node.expect("root 2 has a node");
+        assert!(r2.trunks.iter().any(|t| (t.x - node.centre.x).abs() < 0.01 && t.bottom <= node.centre.y));
+        assert!(r2.trunks.iter().any(|t| (t.x - node.centre.x).abs() < 0.01 && t.top >= node.centre.y));
     }
 
     /// The style is persisted as `navTreeStyle`; an old file (no key) or an unknown value loads as
