@@ -26,6 +26,60 @@ fn imported_odt_has_no_default_language_of_its_own() {
     assert_eq!(back.styles.default_chr.lang, None, "the file names no language");
 }
 
+/// Heading 1–3 imported from an ODT with LibreOffice's default heading color (#0F4761)
+/// preserve the automatic text colour (None) and reference fonts/weights, so they render
+/// pure white on a dark page and black on a light page.
+#[test]
+fn headings_with_default_heading_blue_retain_automatic_color() {
+    let xml = r##"<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+        xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+        xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0"
+        xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0">
+        <office:body><office:text>
+            <text:h text:outline-level="1">Heading One</text:h>
+            <text:h text:outline-level="2">Heading Two</text:h>
+        </office:text></office:body>
+    </office:document-content>"##;
+    let styles = r##"<office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+        xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0"
+        xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0">
+        <office:styles>
+            <style:style style:name="Heading" style:family="paragraph">
+                <style:text-properties fo:color="#0f4761"/>
+            </style:style>
+            <style:style style:name="Heading_20_1" style:display-name="Heading 1" style:family="paragraph" style:parent-style-name="Heading">
+                <style:text-properties fo:font-size="20pt"/>
+            </style:style>
+            <style:style style:name="Heading_20_2" style:display-name="Heading 2" style:family="paragraph" style:parent-style-name="Heading">
+                <style:text-properties fo:font-size="16pt"/>
+            </style:style>
+        </office:styles>
+    </office:document-styles>"##;
+    let mut zip_buf = Vec::new();
+    {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut zip_buf));
+        zip.start_file("mimetype", zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored)).unwrap();
+        std::io::Write::write_all(&mut zip, b"application/vnd.oasis.opendocument.text").unwrap();
+        zip.start_file("content.xml", zip::write::SimpleFileOptions::default()).unwrap();
+        std::io::Write::write_all(&mut zip, xml.as_bytes()).unwrap();
+        zip.start_file("styles.xml", zip::write::SimpleFileOptions::default()).unwrap();
+        std::io::Write::write_all(&mut zip, styles.as_bytes()).unwrap();
+        zip.finish().unwrap();
+    }
+    let doc = super::import(&zip_buf).unwrap();
+    let h1 = doc.styles.get("Heading1").expect("Heading1 style");
+    assert_eq!(h1.chr.color, None, "Heading 1 keeps automatic colour");
+    assert_eq!(h1.chr.size, Some(20.0));
+    assert_eq!(h1.chr.font.as_deref(), Some(wordcraft_doc::styles::REFERENCE_SERIF_FONT));
+    assert_eq!(h1.chr.bold, Some(true));
+
+    let h2 = doc.styles.get("Heading2").expect("Heading2 style");
+    assert_eq!(h2.chr.color, None, "Heading 2 keeps automatic colour");
+    assert_eq!(h2.chr.size, Some(16.0));
+    assert_eq!(h2.chr.font.as_deref(), Some(wordcraft_doc::styles::REFERENCE_SANS_FONT));
+    assert_eq!(h2.chr.bold, Some(true));
+}
+
 /// The page background (`fo:background-color` of the page layout) is a document setting, as in
 /// the DOCX reader: the reference Writer document has `#181818`, and WordCraft keeps it.
 #[test]

@@ -354,6 +354,31 @@ fn apply_look(doc: &mut Document, kind: model::Kind, look: &super::styles::ParaL
     if look.contextual.is_some() {
         p.contextual_spacing = look.contextual;
     }
+    // Headings and Title follow the LibreOffice Writer reference document and WordCraft 0.10/026
+    // visual parity (see `StyleSheet::builtin` and `REFERENCE_SERIF_FONT`): bold, the reference's
+    // own fonts (Liberation Serif / Google Sans), sizes and spacing, and the automatic text colour
+    // — white on its dark page and black on a light one.
+    // The generic LibreOffice heading blue (#0F4761 / HEADING_BLUE) must not override the automatic colour.
+    match kind {
+        model::Kind::Heading(n) => {
+            if n <= 3 || st.chr.color == Some(wordcraft_doc::props::TextColor::Rgb(wordcraft_doc::styles::HEADING_BLUE)) {
+                st.chr.color = None;
+            }
+            if st.chr.bold.is_none() && n <= 3 {
+                st.chr.bold = Some(true);
+            }
+            if st.chr.font.is_none() && n <= 3 {
+                st.chr.font = match n {
+                    2 => Some(wordcraft_doc::styles::REFERENCE_SANS_FONT.into()),
+                    _ => Some(wordcraft_doc::styles::REFERENCE_SERIF_FONT.into()),
+                };
+            }
+        }
+        model::Kind::Title if st.chr.color == Some(wordcraft_doc::props::TextColor::Rgb(wordcraft_doc::styles::HEADING_BLUE)) => {
+            st.chr.color = None;
+        }
+        _ => {}
+    }
 }
 
 /// Number the headings as the outline style `levels` does (ODF 1.3 §16.34): one list whose
