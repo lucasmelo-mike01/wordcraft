@@ -625,7 +625,7 @@ pub(super) fn nav(app: &mut WordApp, ui: &mut Ui) {
                         .enumerate()
                         .skip(i + 1)
                         .find(|(j, _)| visible[*j])
-                        .is_none_or(|(_, (_, next, _))| *next <= *lv);
+                        .is_none_or(|(_, (_, next, _))| *next < *lv);
                     let collapsed = collapsed_flags[i];
                     let row_id = ui.make_persistent_id(("nav_row", path));
                     // The trunks of the active branch: each ancestor level whose parent row is on the

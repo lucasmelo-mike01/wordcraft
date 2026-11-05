@@ -57,6 +57,7 @@ fn main() {
                     return;
                 }
                 let ctx = ui.ctx().clone();
+                ctx.set_missing_glyph_policy(egui::MissingGlyphPolicy::Tofu);
                 app.logic(&ctx);
                 app.ui(ui);
             },
