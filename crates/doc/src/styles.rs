@@ -494,6 +494,11 @@ pub const HEADING_BLUE: Rgb = Rgb(0x0F, 0x47, 0x61);
 /// Default body/heading fonts (theme minor/major). Substituted by layout when not installed.
 pub const BODY_FONT: &str = "Aptos";
 pub const HEADING_FONT: &str = "Aptos Display";
+/// The serif and sans heading fonts of the reference document (a LibreOffice Writer study
+/// sheet): Heading 1 and Heading 3 are set in Liberation Serif, Heading 2 in Google Sans. Both
+/// are substituted by layout when not installed.
+pub const REFERENCE_SERIF_FONT: &str = "Liberation Serif";
+pub const REFERENCE_SANS_FONT: &str = "Google Sans";
 
 fn chr() -> CharProps {
     CharProps::default()
@@ -551,18 +556,22 @@ impl StyleSheet {
             quick: true,
             ..p_style()
         });
-        let heads: [(f32, f32, f32, Option<bool>, Rgb, &str); 9] = [
-            (20.0, 18.0, 4.0, None, HEADING_BLUE, HEADING_FONT),
-            (16.0, 8.0, 4.0, None, HEADING_BLUE, HEADING_FONT),
-            (14.0, 8.0, 4.0, None, HEADING_BLUE, BODY_FONT),
-            (12.0, 4.0, 2.0, Some(true), HEADING_BLUE, BODY_FONT),
-            (12.0, 4.0, 2.0, None, HEADING_BLUE, BODY_FONT),
-            (12.0, 2.0, 0.0, Some(true), Rgb(0x59, 0x59, 0x59), BODY_FONT),
-            (12.0, 2.0, 0.0, None, Rgb(0x59, 0x59, 0x59), BODY_FONT),
-            (12.0, 0.0, 0.0, Some(true), Rgb(0x27, 0x27, 0x27), BODY_FONT),
-            (12.0, 0.0, 0.0, None, Rgb(0x27, 0x27, 0x27), BODY_FONT),
+        // Heading 1–3 follow the LibreOffice Writer reference document (see
+        // [`REFERENCE_SERIF_FONT`]): bold, the reference's own fonts, sizes and spacing, and the
+        // automatic text colour — Writer's `use-window-font-color`, white on its dark page and
+        // black on a light one. Heading 4–9 keep the Word set.
+        let heads: [(f32, f32, f32, Option<bool>, Option<Rgb>, &str, bool); 9] = [
+            (24.0, 12.0, 6.0, None, None, REFERENCE_SERIF_FONT, true),
+            (16.0, 10.0, 6.0, None, None, REFERENCE_SANS_FONT, true),
+            (14.0, 7.0, 6.0, None, None, REFERENCE_SERIF_FONT, true),
+            (12.0, 4.0, 2.0, Some(true), Some(HEADING_BLUE), BODY_FONT, false),
+            (12.0, 4.0, 2.0, None, Some(HEADING_BLUE), BODY_FONT, false),
+            (12.0, 2.0, 0.0, Some(true), Some(Rgb(0x59, 0x59, 0x59)), BODY_FONT, false),
+            (12.0, 2.0, 0.0, None, Some(Rgb(0x59, 0x59, 0x59)), BODY_FONT, false),
+            (12.0, 0.0, 0.0, Some(true), Some(Rgb(0x27, 0x27, 0x27)), BODY_FONT, false),
+            (12.0, 0.0, 0.0, None, Some(Rgb(0x27, 0x27, 0x27)), BODY_FONT, false),
         ];
-        for (i, (size, before, after, italic, c, font)) in heads.into_iter().enumerate() {
+        for (i, (size, before, after, italic, c, font, bold)) in heads.into_iter().enumerate() {
             let n = i + 1;
             add(Style {
                 id: format!("Heading{n}"),
@@ -576,9 +585,14 @@ impl StyleSheet {
                     keep_next: Some(true),
                     keep_lines: Some(true),
                     outline_level: Some(i as u8),
+                    // The reference's headings inherit its 108% line height; Heading 4–9 keep the
+                    // document default.
+                    // The reference's 108% line height, in the units the DOCX writer stores
+                    // (240ths of a line: 259/240 = 1.0792), so a saved style comes back equal.
+                    line_spacing: (i < 3).then_some(LineSpacing::Multiple(259.0 / 240.0)),
                     ..para()
                 },
-                chr: CharProps { font: Some(font.into()), size: Some(size), italic, color: color(c), ..chr() },
+                chr: CharProps { font: Some(font.into()), size: Some(size), italic, bold: bold.then_some(true), color: c.and_then(color), ..chr() },
                 priority: Some(9 + n as u32),
                 quick: n <= 3,
                 ..p_style()

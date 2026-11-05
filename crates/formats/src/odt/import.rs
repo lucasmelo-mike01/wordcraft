@@ -932,6 +932,11 @@ pub fn import_on(bytes: &[u8], page: &SectionProps) -> Result<Document, String> 
     }
     Arc::make_mut(&mut doc.styles).default_chr.kern = kern.then_some(1.0);
     Arc::make_mut(&mut doc.styles).default_chr.overlay(&scripts);
+    // ODT's text language is not read yet (a known limit of this importer): don't let the built-in
+    // sheet's `en-US` look like the file's own language, or a Portuguese document would be
+    // proofed as English. With no language the app's proofing default applies (see
+    // `Session`/`adopt_default_language`).
+    Arc::make_mut(&mut doc.styles).default_chr.lang = None;
     if let Some(t) = default_tab {
         doc.settings.default_tab = t;
     }
@@ -1298,9 +1303,9 @@ pub(super) fn apply_page_layout(xml: &[u8], sec: &mut SectionProps) {
 /// A `style:page-layout-properties` element's page size, orientation and margins into `sec`.
 fn apply_layout(a: &Attrs, sec: &mut SectionProps) {
     let len = |k: &str| get(a, k).and_then(length).filter(|v| *v >= 0.0);
-    // Like the DOCX reader: a page is at least half an inch; at most 22 inches (Word's limit), so a hostile
-    // `1e30pt` can't reach layout.
-    let page = |k: &str| len(k).filter(|v| *v >= 36.0).map(|v| v.min(1584.0));
+    // Like the DOCX reader: a page is at least half an inch; at most 600 cm (LibreOffice's limit),
+    // so a hostile `1e30pt` can't reach layout but a Writer page of 600 cm still opens.
+    let page = |k: &str| len(k).filter(|v| *v >= 36.0).map(|v| v.min(wordcraft_doc::section::MAX_PAGE_SIDE));
     if let (Some(w), Some(h)) = (page("fo:page-width"), page("fo:page-height")) {
         sec.page_w = w;
         sec.page_h = h;

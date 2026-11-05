@@ -1,4 +1,47 @@
+use wordcraft_doc::Rgb;
+
 use super::*;
+
+/// A 600 cm page (LibreOffice's custom size) survives ODT: the reader used to clamp pages to
+/// 22 inches (55.88 cm), which truncated the Writer document.
+#[test]
+fn a_six_hundred_centimetre_page_survives_odt() {
+    let cm = 72.0 / 2.54;
+    let mut d = Document::new();
+    d.ensure_nonempty();
+    d.last_section.page_w = cm * 19.0;
+    d.last_section.page_h = cm * 600.0;
+    let back = super::import(&super::export(&d).unwrap()).unwrap();
+    assert!((back.last_section.page_h - cm * 600.0).abs() < 0.5, "{}", back.last_section.page_h);
+    assert!((back.last_section.page_w - cm * 19.0).abs() < 0.5);
+}
+
+/// An ODT that names no language does not inherit the built-in sheet's en-US, so the app's
+/// proofing default (pt-BR on a Portuguese interface) applies instead of English.
+#[test]
+fn imported_odt_has_no_default_language_of_its_own() {
+    let mut d = Document::new();
+    d.ensure_nonempty();
+    let back = super::import(&super::export(&d).unwrap()).unwrap();
+    assert_eq!(back.styles.default_chr.lang, None, "the file names no language");
+}
+
+/// The page background (`fo:background-color` of the page layout) is a document setting, as in
+/// the DOCX reader: the reference Writer document has `#181818`, and WordCraft keeps it.
+#[test]
+fn a_page_background_survives_a_round_trip() {
+    let mut d = Document::new();
+    d.ensure_nonempty();
+    d.settings.page_color = Some(Rgb(0x18, 0x18, 0x18));
+    let bytes = super::export(&d).unwrap();
+    let back = super::import(&bytes).unwrap();
+    assert_eq!(back.settings.page_color, Some(Rgb(0x18, 0x18, 0x18)));
+
+    let mut plain = Document::new();
+    plain.ensure_nonempty();
+    let plain = super::import(&super::export(&plain).unwrap()).unwrap();
+    assert_eq!(plain.settings.page_color, None, "no background, none in the file");
+}
 
 #[test]
 fn escaper_drops_noncharacters() {
@@ -314,11 +357,13 @@ fn hostile_page_layout_values_are_clamped() {
                 </office:document-styles>"#
         )
     };
-    // Huge values: the page is capped at 22 inches and margins at the page's longer side.
+    // Huge values: the page is capped at 600 cm (LibreOffice's limit) and margins at the
+    // page's longer side.
+    let max = wordcraft_doc::section::MAX_PAGE_SIDE;
     let mut sec = wordcraft_doc::SectionProps::default();
     apply_page_layout(styles("1e30pt", "1e30in", "1e30pt").as_bytes(), &mut sec);
-    assert_eq!((sec.page_w, sec.page_h), (1584.0, 1584.0));
-    assert_eq!((sec.margin_top, sec.margin_left), (1584.0, 1584.0));
+    assert_eq!((sec.page_w, sec.page_h), (max, max));
+    assert_eq!((sec.margin_top, sec.margin_left), (max, max));
     // Negative, zero, tiny and non-numeric values leave the defaults alone: the default page, and
     // XSL's margins (0).
     let def = wordcraft_doc::SectionProps { margin_top: 0.0, margin_right: 0.0, ..Default::default() };

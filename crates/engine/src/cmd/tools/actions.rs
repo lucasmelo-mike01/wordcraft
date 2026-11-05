@@ -59,6 +59,54 @@ pub(super) fn language(s: &mut Session, v: &Value) -> CmdResult {
     Ok(result)
 }
 
+/// The proofing default shown by File › Options › Language (and used for text that names no
+/// language): the saved default, else the interface's editing language, else US English.
+fn proofing_default(s: &Session) -> String {
+    s.prefs.default_language.clone().or_else(|| s.editing_lang.clone()).unwrap_or_else(|| "en-US".to_string())
+}
+
+/// File › Options › Language › Review language: set the app's proofing default. `auto` follows
+/// the interface language, `off` turns the live check off, a tag is used as it is; `apply` (the
+/// default) also changes the open document's default language, which clears the live squiggles
+/// at once. Persisted with the other preferences in `ui.json`.
+pub(super) fn default_language(s: &mut Session, v: &Value) -> CmdResult {
+    let Some(value) = p::str(v, "value").map(str::trim).filter(|v| !v.is_empty()) else {
+        let checking = s.view.proofing;
+        let value = if !checking { "off".to_string() } else { s.prefs.default_language.clone().unwrap_or_else(|| "auto".to_string()) };
+        return Ok(json!({"value": value, "resolved": proofing_default(s), "checking": checking}));
+    };
+    if value.eq_ignore_ascii_case("off") {
+        s.view.proofing = false;
+        s.prefs.check_spelling = false;
+        return Ok(json!({"value": "off", "resolved": proofing_default(s), "checking": false}));
+    }
+    let (value, resolved) = if value.eq_ignore_ascii_case("auto") {
+        // Automatic follows the interface language (a pt-br interface writes pt-BR).
+        s.prefs.default_language = None;
+        ("auto".to_string(), proofing_default(s))
+    } else {
+        let tag = wordcraft_proof::lang::normalize_tag(value)
+            .ok_or_else(|| CmdError::Params(format!("`value` must be auto, off or a language tag, not {value:?}")))?;
+        s.prefs.default_language = Some(tag.clone());
+        s.view.proofing = true;
+        s.prefs.check_spelling = true;
+        (tag.clone(), tag)
+    };
+    if p::bool(v, "apply").unwrap_or(true) {
+        // The open document's own default language: text that names no language now resolves in
+        // the chosen one, and the live check follows without reopening the file.
+        let styles = std::sync::Arc::make_mut(&mut s.doc.styles);
+        styles.default_chr.lang = Some(resolved.clone());
+        if let Some(normal) = styles.styles.iter_mut().find(|x| x.id == "Normal")
+            && normal.chr.lang.is_some()
+        {
+            normal.chr.lang = Some(resolved.clone());
+        }
+        s.relayout();
+    }
+    Ok(json!({"value": value, "resolved": resolved, "checking": s.view.proofing}))
+}
+
 pub(super) fn macros(s: &mut Session, v: &Value) -> CmdResult {
     if let Some(d) = v.get("define") {
         let name = d.get("name").and_then(Value::as_str).unwrap_or("Macro").to_string();

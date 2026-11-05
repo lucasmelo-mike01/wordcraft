@@ -181,6 +181,10 @@ pub struct UiState {
     #[serde(rename = "dark", skip_serializing)]
     pub(crate) legacy_dark: Option<bool>,
     pub nav_tab: String,
+    /// How the Navigation pane's outline is drawn (File › Options › Display, and the pane's ▾
+    /// menu): Option A, the clean rail, or Option B, every branch connected.
+    #[serde(default, deserialize_with = "panes::lenient_nav_tree_style")]
+    pub nav_tree_style: panes::NavTreeStyle,
     /// View › Navigation Pane: open or closed as the person left it, kept between runs (#2526).
     /// The session owns it while running (see [`WordApp::prefs`]).
     pub nav_pane: bool,
@@ -190,8 +194,8 @@ pub struct UiState {
     /// The floating Styles pane's `[x, y, width, height]`, also kept while it is docked.
     #[serde(deserialize_with = "lenient_float_rect")]
     pub styles_pane_float: Option<[f32; 4]>,
-    /// The docked Styles pane's width this run; like the other panes' widths, not kept between runs.
-    #[serde(skip)]
+    /// The docked Styles pane's width, kept between runs like the other panes' widths (#2571).
+    #[serde(default, deserialize_with = "panes::lenient_width", skip_serializing_if = "Option::is_none")]
     pub styles_pane_width: Option<f32>,
     /// Where each of the other task panes sits, by [`panes::Pane::key`] (#1756).
     #[serde(deserialize_with = "panes::lenient_places")]
@@ -203,6 +207,18 @@ pub struct UiState {
     /// Headings whose sub-headings the Navigation pane hides (#1997); per session, not saved.
     #[serde(skip)]
     pub nav_collapsed: std::collections::HashSet<wordcraft_doc::Path>,
+    /// View › Show › Ruler: shown or hidden in every document and kept between runs.
+    pub ruler: bool,
+    /// View › Show › Gridlines (the drawing grid over the page).
+    pub gridlines: bool,
+    /// Table Layout › View Gridlines.
+    pub table_gridlines: bool,
+    /// Home › Paragraph › Show/Hide ¶.
+    pub marks: bool,
+    /// Defaults for new documents (File › Options › Defaults): styles and page setup. The session
+    /// owns them while running (see [`WordApp::prefs`]); they are never applied to an open
+    /// document.
+    pub defaults: wordcraft_doc::defaults::DocumentDefaults,
     pub show_discord: bool,
     /// User name (File › Options) for comments and tracked changes. `None` (no saved name) keeps
     /// the default; a saved empty name stays empty (#4368).
@@ -320,6 +336,7 @@ impl Default for UiState {
             animations: theme::Animations::default(),
             legacy_dark: None,
             nav_tab: "headings".into(),
+            nav_tree_style: Default::default(),
             nav_pane: false,
             styles_pane_dock: wordcraft_engine::StylesPaneDock::Right,
             styles_pane_float: None,
@@ -327,6 +344,12 @@ impl Default for UiState {
             pane_places: Default::default(),
             pane_order: Vec::new(),
             nav_collapsed: Default::default(),
+            // The view's own defaults: ruler on, gridlines off, table gridlines on, marks off.
+            ruler: true,
+            gridlines: false,
+            table_gridlines: true,
+            marks: false,
+            defaults: Default::default(),
             show_discord: true,
             author: None,
             window: None,
@@ -496,6 +519,9 @@ pub struct WordApp {
     pub(crate) dialog_pick: Option<String>,
     /// macOS: the window has no title bar; leave room for the traffic lights.
     pub integrated_titlebar: bool,
+    /// A preference changed that must reach `ui.json` at once (the tree style does; most others
+    /// are written when the app exits). The desktop host clears it after saving.
+    pub prefs_dirty: bool,
     /// macOS: the title bar's height and where its content starts, around the traffic lights.
     pub mac_titlebar: chrome::MacTitleBar,
     /// Focus (#1678): the ribbon is dropped down from the Focus bar, over the page.

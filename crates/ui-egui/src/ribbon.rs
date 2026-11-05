@@ -44,7 +44,6 @@ use home::home;
 #[cfg(test)]
 use home::painter_double_click;
 use insert::insert;
-#[cfg(test)]
 pub(crate) use language::PROOFING_LANGUAGES;
 #[cfg(test)]
 pub(crate) use language::all_languages;

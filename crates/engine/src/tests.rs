@@ -47,6 +47,44 @@ fn text(s: &Session) -> String {
     s.doc.plain_text(StoryRef::Body)
 }
 
+/// File › Options › Defaults: the style and the page setup adopted for new documents are what a
+/// new document starts from, and the open document is never touched.
+#[test]
+fn adopted_defaults_start_every_new_document() {
+    let mut s = s();
+    run(&mut s, "defaults.saveStyle", json!({"style": "Normal", "chr": {"font": "Courier New", "size": 11.0}}));
+    run(&mut s, "defaults.savePageValues", json!({"pageW": 420.0, "pageH": 595.0, "marginTop": 42.0}));
+    let state = run(&mut s, "defaults.state", json!({}));
+    assert_eq!(state["styles"]["ids"], json!(["Normal"]));
+    assert_eq!(state["page"]["pageW"], json!(420.0));
+
+    let d = s.blank_document();
+    assert_eq!((d.last_section.page_w, d.last_section.page_h), (420.0, 595.0), "the adopted page");
+    assert_eq!(d.last_section.margin_top, 42.0, "the adopted margin");
+    let normal = d.styles.get("Normal").expect("Normal is a built-in");
+    assert_eq!((normal.chr.font.as_deref(), normal.chr.size), (Some("Courier New"), Some(11.0)), "the adopted style");
+    assert_ne!((s.doc.last_section.page_w, s.doc.last_section.page_h), (420.0, 595.0), "the open document is untouched");
+
+    run(&mut s, "defaults.reset", json!({"what": "page"}));
+    let d = s.blank_document();
+    assert_ne!((d.last_section.page_w, d.last_section.page_h), (420.0, 595.0), "the app's paper again");
+}
+
+/// A `defaults.saveStyles` naming an unknown style changes nothing, and a page update keeps the
+/// values it does not name.
+#[test]
+fn a_failed_save_styles_changes_nothing() {
+    let mut s = s();
+    run(&mut s, "defaults.savePageValues", json!({"pageW": 420.0, "pageH": 595.0, "marginTop": 30.0}));
+    let before = run(&mut s, "defaults.state", json!({}));
+    assert!(s.run("defaults.saveStyles", &json!({"what": ["Normal", "NoSuchStyle"]})).is_err());
+    assert_eq!(run(&mut s, "defaults.state", json!({})), before, "nothing was adopted");
+    run(&mut s, "defaults.savePageValues", json!({"marginTop": 42.0}));
+    let state = run(&mut s, "defaults.state", json!({}));
+    assert_eq!(state["page"]["pageW"], json!(420.0), "the size it did not name");
+    assert_eq!(state["page"]["marginTop"], json!(42.0), "the margin it did name");
+}
+
 #[test]
 fn doc_extension_dispatches_to_docbin() {
     // Garbage bytes with a .doc name must produce an error through the Word 97-2003
@@ -1723,6 +1761,127 @@ fn cf_html(html: &str) -> String {
     )
 }
 
+/// Markdown copied as text reads as a document when pasted: its headings, lists, tables and
+/// emphasis become WordCraft's own formatting, as opening a `.md` file does — instead of the
+/// source's `##`, `**` and `- ` landing in the text.
+#[test]
+fn paste_reads_markdown_as_a_formatted_document() {
+    let mut s = s();
+    let md =
+        "# Título\n\n## Tema central da questão\n\n**Direito** e *ênfase*\n\n- A\n- B\n\n> citação\n\n---\n\n| A | B |\n| :-: | --- |\n| 1 | 2 |\n";
+    run(&mut s, "edit.paste", json!({"text": md}));
+    let plain = text(&s);
+    assert!(plain.starts_with("Título\nTema central da questão\nDireito e ênfase"), "{plain:?}");
+    for marker in ["#", "**", "*ênfase*", "- A", "| ---"] {
+        assert!(!plain.contains(marker), "{marker:?} left in {plain:?}");
+    }
+    let style = |s: &Session, start: &str| {
+        s.doc.body.iter().filter_map(|b| b.as_para()).find(|p| p.text.starts_with(start)).and_then(|p| p.props.style.clone())
+    };
+    assert_eq!(style(&s, "Título").as_deref(), Some("Heading1"));
+    assert_eq!(style(&s, "Tema central").as_deref(), Some("Heading2"));
+    assert_eq!(style(&s, "citação").as_deref(), Some("Quote"));
+    // Emphasis: bold on "Direito", italic on "ênfase".
+    let at = s.doc.body.iter().position(|b| b.as_para().is_some_and(|p| p.text.starts_with("Direito"))).unwrap();
+    assert!(bold_at(&s, at, 0));
+    assert_eq!(s.doc.para_at(&Pos::body(at, 10)).unwrap().props_of_char(10).italic, Some(true));
+    // A bullet list, with its numbering definition adopted.
+    let lists: Vec<_> = s.doc.body.iter().filter_map(|b| b.as_para()).filter(|p| p.props.numbering.is_some_and(|n| n.num != 0)).collect();
+    assert_eq!(lists.len(), 2, "{plain:?}");
+    assert!(lists.iter().all(|p| s.doc.numbering.nums.iter().any(|n| n.id == p.props.numbering.unwrap().num)));
+    // The pipe table is a table.
+    assert!(s.doc.body.iter().any(|b| matches!(&**b, wordcraft_doc::Block::Table(_))), "{plain:?}");
+}
+
+/// Paste Special offers Markdown for text that reads as Markdown, formats that text (and any text
+/// the user picks Markdown for), and doesn't offer it for prose.
+#[test]
+fn paste_special_lists_and_pastes_markdown() {
+    let mut s = s();
+    let md = "## Tema\n\n**negrito** e lista:\n\n- um\n- dois\n- três\n";
+    let r = run(&mut s, "edit.pasteSpecial", json!({"text": md}));
+    let ids: Vec<&str> = r["formats"].as_array().unwrap().iter().map(|f| f["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["markdown", "text"]);
+    let r = run(&mut s, "edit.pasteSpecial", json!({"as": "markdown", "text": md}));
+    assert_eq!(r["pastedAs"], "markdown");
+    assert!(text(&s).starts_with("Tema\nnegrito e lista:\num\ndois\ntrês"), "{}", text(&s));
+    assert_eq!(s.doc.body.first().and_then(|b| b.as_para()).and_then(|p| p.props.style.as_deref()), Some("Heading2"));
+    // Picking Markdown formats text the detection would leave alone: one pair of `**` is enough
+    // once the user says what the text is.
+    let mut t = self::s();
+    run(&mut t, "edit.pasteSpecial", json!({"as": "markdown", "text": "usa **negrito** aqui"}));
+    assert_eq!(text(&t), "usa negrito aqui");
+    assert!(bold_at(&t, 0, 4));
+    // Prose: Markdown is not offered.
+    let r = run(&mut t, "edit.pasteSpecial", json!({"text": "Art. 1º O Município é pessoa jurídica de direito público interno."}));
+    let ids: Vec<&str> = r["formats"].as_array().unwrap().iter().map(|f| f["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["text"]);
+}
+
+/// Text that only looks a little like Markdown stays text: one `#` comment line, one `>` quote or
+/// one pair of `**` is prose, not a document, and so are numbered lines with no other structure.
+#[test]
+fn markdown_detection_keeps_prose_as_text() {
+    let offered = |sample: &str| {
+        let mut s = s();
+        let r = run(&mut s, "edit.pasteSpecial", json!({"text": sample}));
+        r["formats"].as_array().unwrap().iter().any(|f| f["id"] == "markdown")
+    };
+    for sample in ["# git status\ngit status --short", "Use **cuidado** ao citar o art. 5º.", "> ver nota anterior", "1. Art. 5º\n2. Art. 6º"] {
+        assert!(!offered(sample), "read as Markdown: {sample:?}");
+        let mut s = s();
+        run(&mut s, "edit.paste", json!({"text": sample}));
+        assert_eq!(text(&s), sample, "pasted as text: {sample:?}");
+        assert!(s.doc.body.iter().filter_map(|b| b.as_para()).all(|p| p.props.style.is_none() && p.props.numbering.is_none()), "{sample:?}");
+    }
+    for sample in ["# Um\n\n# Dois", "```\ncode\n```", "| A | B |\n| - | - |\n| 1 | 2 |", "- a\n- b\n- c", "## Tema\n\n**negrito** e `código`"] {
+        assert!(offered(sample), "not read as Markdown: {sample:?}");
+    }
+}
+
+/// Keep Text Only keeps the Markdown source, whatever Paste would make of it.
+#[test]
+fn paste_text_keeps_the_markdown_source() {
+    let mut s = s();
+    let md = "## Tema\n\n**negrito**\n\n- um\n- dois\n- três\n";
+    run(&mut s, "edit.pasteText", json!({"text": md}));
+    assert_eq!(text(&s), md);
+    assert!(s.doc.body.iter().filter_map(|b| b.as_para()).all(|p| p.props.style.is_none() && p.props.numbering.is_none()), "{}", text(&s));
+    // A statute pasted as text: numbered lines are its text, not a list to renumber.
+    let law = "Art. 1º O Município é pessoa jurídica de direito público interno.\n\n1. A autonomia política;\n2. A autonomia financeira;\n\n* Ver a Lei Orgânica.";
+    let mut t = self::s();
+    run(&mut t, "edit.paste", json!({"text": law}));
+    assert_eq!(text(&t), law);
+    assert!(t.doc.body.iter().filter_map(|b| b.as_para()).all(|p| p.props.numbering.is_none()));
+}
+
+/// Headings pasted from Markdown keep their styles, outline levels and emoji through a save and
+/// a reopen: the Navigator derives its tree from those levels, so the outline survives the file.
+#[test]
+fn pasted_headings_keep_their_outline_and_emoji_after_saving() {
+    let mut s = s();
+    run(&mut s, "edit.paste", json!({"text": "## 1️⃣ Tema central\n\n### 📘 Conceito Básico\n\n## 2️⃣ Resumo teórico\n"}));
+    assert_eq!(text(&s), "1️⃣ Tema central\n📘 Conceito Básico\n2️⃣ Resumo teórico");
+    let dir = std::env::temp_dir().join(format!("wc-outline-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("outline.docx");
+    run(&mut s, "file.saveAs", json!({"path": path.to_str().unwrap()}));
+    let mut t = self::s();
+    run(&mut t, "file.open", json!({"path": path.to_str().unwrap()}));
+    let outline: Vec<Option<u8>> = t
+        .doc
+        .body
+        .iter()
+        .filter_map(|b| b.as_para())
+        .filter(|p| p.text.trim() != "")
+        .map(|p| t.doc.styles.resolve_para(&p.props).outline_level)
+        .collect();
+    assert_eq!(outline, [Some(1), Some(2), Some(1)], "Heading 2, Heading 3, Heading 2");
+    assert!(text(&t).contains("1\u{FE0F}\u{20E3}"), "the keycap code points survive the file: {:?}", text(&t));
+    assert!(text(&t).contains("📘"), "the marker emoji survives the file: {:?}", text(&t));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// LibreOffice copies a paragraph indented on both sides as `<blockquote>`, its margins in the
 /// page's stylesheet (#1270). Pasting it gives a Normal paragraph with those indents — not the
 /// Quote style (centred, italic) — by Paste and by Paste Special > HTML alike.
@@ -3070,8 +3229,12 @@ fn layout_size_takes_a_custom_size_and_clamps_it() {
     run(&mut s, "layout.size", json!({"width": 300.0, "height": 500.0}));
     assert_eq!(size(&s), (300.0, 500.0));
     run(&mut s, "layout.margins", json!({"top": 0.0, "bottom": 0.0, "left": 0.0, "right": 0.0}));
+    // A 600 cm page is a real page now: 5000 pt stays as it is, and only past the maximum is the
+    // value clamped.
     run(&mut s, "layout.size", json!({"width": 40.0, "height": 5000.0}));
-    assert_eq!(size(&s), (40.0, 1584.0), "clamped to 22\"");
+    assert_eq!(size(&s), (40.0, 5000.0), "5000 pt is under 600 cm");
+    run(&mut s, "layout.size", json!({"width": 40.0, "height": 40000.0}));
+    assert_eq!(size(&s), (40.0, wordcraft_doc::section::MAX_PAGE_SIDE), "clamped to 600 cm");
     for junk in [
         json!({"width": 1e300, "height": 400.0}),
         json!({"width": "NaN", "height": 400.0}),
@@ -3082,7 +3245,7 @@ fn layout_size_takes_a_custom_size_and_clamps_it() {
         json!({"width": 1.0, "height": 400.0}),
     ] {
         assert!(s.run("layout.size", &junk).is_err(), "{junk}");
-        assert_eq!(size(&s), (40.0, 1584.0), "{junk} leaves the size alone");
+        assert_eq!(size(&s), (40.0, wordcraft_doc::section::MAX_PAGE_SIDE), "{junk} leaves the size alone");
     }
     // A landscape section keeps its orientation: the long side goes across.
     run(&mut s, "layout.orientation", json!({"value": "landscape"}));
@@ -6216,7 +6379,8 @@ fn style_inspector_reports_and_clears_levels() {
     run(&mut s, "text.insert", json!({"text": "Chapter one"}));
     run(&mut s, "para.heading1", json!({}));
     run(&mut s, "select.all", json!({}));
-    run(&mut s, "format.bold", json!({"value": true}));
+    // Italic, not bold: the heading style is bold already (the reference's headings are).
+    run(&mut s, "format.italic", json!({"value": true}));
     run(&mut s, "para.alignCenter", json!({}));
 
     let r = run(&mut s, "styles.inspect", json!({}));
@@ -6225,14 +6389,16 @@ fn style_inspector_reports_and_clears_levels() {
     let pdirect = r["paragraph"]["direct"].as_array().unwrap();
     assert!(pdirect.iter().any(|d| d["prop"] == "align" && d["value"] == "center"), "{pdirect:?}");
     assert!(r["character"]["style"].is_null());
+    let has_italic = |cd: &[serde_json::Value]| cd.iter().any(|d| d["prop"] == "italic" && d["value"] == true);
+    let has_size = |cd: &[serde_json::Value]| cd.iter().any(|d| d["prop"] == "size");
     let cdirect = r["character"]["direct"].as_array().unwrap();
-    assert_eq!(cdirect, &vec![json!({"prop": "bold", "value": true}), json!({"prop": "boldCs", "value": true})]);
+    assert!(has_italic(cdirect) && !has_size(cdirect), "{cdirect:?}");
 
-    // Formatting that matches the style isn't a difference (Heading 1 is 20 pt).
-    run(&mut s, "format.size", json!({"size": 20}));
+    // Formatting that matches the style isn't a difference (Heading 1 is 24 pt).
+    run(&mut s, "format.size", json!({"size": 24}));
     let r = run(&mut s, "styles.inspect", json!({}));
     let cdirect = r["character"]["direct"].as_array().unwrap();
-    assert_eq!(cdirect, &vec![json!({"prop": "bold", "value": true}), json!({"prop": "boldCs", "value": true})]);
+    assert!(has_italic(cdirect) && !has_size(cdirect), "{cdirect:?}");
 
     // Character style level.
     run(&mut s, "format.charStyle", json!({"style": "Emphasis"}));
@@ -6246,7 +6412,7 @@ fn style_inspector_reports_and_clears_levels() {
     run(&mut s, "styles.inspectorClear", json!({"level": "characterFormatting"}));
     let r = run(&mut s, "styles.inspect", json!({}));
     assert!(r["character"]["direct"].as_array().unwrap().is_empty(), "{r}");
-    assert!(!run(&mut s, "format.state", json!({}))["bold"].as_bool().unwrap());
+    assert!(!run(&mut s, "format.state", json!({}))["italic"].as_bool().unwrap());
     assert_eq!(r["paragraph"]["style"], "Heading1");
     assert!(!r["paragraph"]["direct"].as_array().unwrap().is_empty());
 

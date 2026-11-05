@@ -120,6 +120,11 @@ impl eframe::App for App {
     }
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.0.ui(ui);
+        // A preference the UI marks as immediate (the Navigation tree style) reaches ui.json
+        // before the next frame, not only at exit.
+        if std::mem::take(&mut self.0.prefs_dirty) {
+            save_prefs(&self.0);
+        }
         self.3.show(frame);
     }
     fn on_exit(&mut self) {
@@ -529,9 +534,10 @@ fn main() -> eframe::Result {
             load_user_dictionary(&mut app);
             // Language packs from the suite's font store; an Install click is the person's own.
             wordcraft_engine::packs::use_font_store(true);
-            // A region chosen in File › Options replaces the system's for the first blank
-            // document too (#838).
-            if !sample && app.session.prefs.region.is_some() {
+            // The window's first document is made once the preferences are in: the person's
+            // defaults (styles, page setup) and, when chosen, their region's paper (#838) must
+            // both be in place.
+            if !sample {
                 let doc = app.session.blank_document();
                 app.replace_startup_document(doc);
             }

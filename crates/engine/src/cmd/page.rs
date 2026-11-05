@@ -408,7 +408,7 @@ pub fn columns_preset_at(s: &Session) -> Option<&'static str> {
 /// Checks a whole section handed to `layout.pageSetup` by the rules of Size, Margins, Columns,
 /// Line Numbers, Footnotes and Page Borders: a non-finite number or margins that leave no room
 /// for text is an error; the rest is clamped to the ranges those commands use.
-fn validate_section(x: &mut SectionProps) -> Result<(), CmdError> {
+pub(crate) fn validate_section(x: &mut SectionProps) -> Result<(), CmdError> {
     let bad = |what: &str| CmdError::Params(format!("section: {what} must be a finite number"));
     let finite = [x.page_w, x.page_h, x.margin_top, x.margin_bottom, x.margin_left, x.margin_right, x.header, x.footer, x.gutter, x.columns.space];
     if finite.iter().any(|n| !n.is_finite()) {
@@ -542,9 +542,11 @@ pub fn margins_fit(page: (f32, f32), (t, b, l, r): (f32, f32, f32, f32), gutter:
     l + r + gutter <= page.0 - MIN_TEXT_ROOM && t + b <= page.1 - MIN_TEXT_ROOM
 }
 
-/// The smallest and largest page side, points (0.1" and 22", as Word allows).
+/// The smallest page side, points (0.1", as Word allows).
 pub const MIN_PAGE_SIDE: f32 = 7.2;
-pub const MAX_PAGE_SIDE: f32 = 1584.0;
+/// The largest page side, points: 600 cm (LibreOffice's custom page limit), so a Writer document
+/// with a 600 cm page keeps its height. Word's own 22" limit only matters when Word opens it.
+pub const MAX_PAGE_SIDE: f32 = wordcraft_doc::section::MAX_PAGE_SIDE;
 
 fn size(s: &mut Session, v: &Value) -> CmdResult {
     let (w, h) = if let Some(n) = p::str(v, "name") {
