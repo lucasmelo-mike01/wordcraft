@@ -80,6 +80,36 @@ fn headings_with_default_heading_blue_retain_automatic_color() {
     assert_eq!(h2.chr.bold, Some(true));
 }
 
+#[test]
+fn font_family_with_trailing_digits_is_normalized_to_base_font() {
+    let xml = r##"<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+        xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+        xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0"
+        xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0">
+        <office:automatic-styles>
+            <style:style style:name="T1" style:family="text">
+                <style:text-properties fo:font-family="'Google Sans1'"/>
+            </style:style>
+        </office:automatic-styles>
+        <office:body><office:text>
+            <text:p><text:span text:style-name="T1">Test text</text:span></text:p>
+        </office:text></office:body>
+    </office:document-content>"##;
+    let mut zip_buf = Vec::new();
+    {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut zip_buf));
+        zip.start_file("mimetype", zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored)).unwrap();
+        std::io::Write::write_all(&mut zip, b"application/vnd.oasis.opendocument.text").unwrap();
+        zip.start_file("content.xml", zip::write::SimpleFileOptions::default()).unwrap();
+        std::io::Write::write_all(&mut zip, xml.as_bytes()).unwrap();
+        zip.finish().unwrap();
+    }
+    let doc = super::import(&zip_buf).unwrap();
+    let p = doc.body.first().and_then(|b| b.as_para()).expect("para");
+    let span = p.runs.first().expect("run");
+    assert_eq!(span.props.font.as_deref(), Some("Google Sans"));
+}
+
 /// The page background (`fo:background-color` of the page layout) is a document setting, as in
 /// the DOCX reader: the reference Writer document has `#181818`, and WordCraft keeps it.
 #[test]

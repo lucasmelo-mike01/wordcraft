@@ -419,6 +419,15 @@ const FAMILY_CACHE_MAX: usize = 4096;
 /// Family names longer than this (bytes) are resolved but never remembered.
 const FAMILY_KEY_MAX: usize = 256;
 
+/// If a font family name ends with trailing instance digits added by office suites or
+/// converters (e.g. "Google Sans1", "Times New Roman1"), returns the base family name
+/// without the trailing digits.
+pub fn strip_instance_digits(family: &str) -> Option<&str> {
+    let trimmed = family.trim_end();
+    let base = trimmed.trim_end_matches(|c: char| c.is_ascii_digit()).trim_end();
+    if !base.is_empty() && base.len() < trimmed.len() { Some(base) } else { None }
+}
+
 /// Resolve `family` with bold/italic to a face (memoised until user fonts are added or removed,
 /// [`FontDb::generation`]).
 pub fn resolve(family: &str, bold: bool, italic: bool) -> Resolved {
@@ -440,6 +449,8 @@ pub fn resolve(family: &str, bold: bool, italic: bool) -> Resolved {
     let base = if family.trim().eq_ignore_ascii_case("Symbol (PCL6)") { "Symbol" } else { charset_base_family(family) };
     let (fam, substituted) = if db.has_family(family) {
         (family.to_string(), false)
+    } else if let Some(base_no_digit) = strip_instance_digits(family).filter(|b| db.has_family(b)) {
+        (base_no_digit.to_string(), false)
     } else if base != family && db.has_family(base) {
         // Windows maps the charset names to the font itself: not a substitution.
         (base.to_string(), false)
@@ -634,6 +645,16 @@ mod tests {
         let b = resolve("Inter Medium", true, true);
         assert_eq!(b.face.style, "Medium");
         assert!(!b.substituted && b.synth_bold && b.synth_italic);
+    }
+
+    #[test]
+    fn resolves_trailing_instance_digits_to_installed_family() {
+        assert_eq!(strip_instance_digits("Google Sans1"), Some("Google Sans"));
+        assert_eq!(strip_instance_digits("Arial2"), Some("Arial"));
+        assert_eq!(strip_instance_digits("Arial"), None);
+        let r = resolve("Liberation Sans1", false, false);
+        assert!(!r.substituted);
+        assert_eq!(r.face.family, "Liberation Sans");
     }
 
     #[test]
