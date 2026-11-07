@@ -88,6 +88,7 @@ impl Session {
             doc,
             sel,
             view,
+            defaults: wordcraft_doc::defaults::DocumentDefaults::default(),
             pending,
             last_highlight: wordcraft_doc::props::Highlight::Yellow,
             path,

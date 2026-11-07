@@ -230,7 +230,7 @@ fn thai_in_an_installed_latin_font_keeps_the_latin_face_for_latin() {
 
 #[test]
 fn a_missing_latin_font_with_a_thai_complex_script_font_keeps_both() {
-    if !thai_font_installed() {
+    if !thai_latin_font_installed() {
         eprintln!("skipped: no Thai font installed");
         return;
     }

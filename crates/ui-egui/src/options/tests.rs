@@ -2,7 +2,7 @@ use egui_kittest::kittest::{NodeT, Queryable};
 use serde_json::json;
 use wordcraft_geom::Unit;
 
-use super::{decimal, length, parse_length, unit};
+use super::{PageDraft, StyleDraft, decimal, draft_from_style, length, page_draft_id, parse_length, style_draft_id, unit};
 
 use crate::theme::Appearance;
 use crate::{Services, StatusCount, UiState, WordApp};
@@ -493,4 +493,144 @@ fn length_units_follow_the_interface_language() {
     h.state_mut().run("ui.language", json!({"value": "en"})).unwrap();
     h.run_steps(4);
     assert_eq!(length(72.0), "25,4 mm", "English keeps the English names");
+}
+
+fn defaults_harness() -> egui_kittest::Harness<'static, WordApp> {
+    let mut a = app();
+    a.run("file.options", json!({"pane": "defaults"})).unwrap();
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).build_ui_state(
+        |ui, app: &mut WordApp| {
+            let ctx = ui.ctx().clone();
+            app.logic(&ctx);
+            app.ui(ui);
+        },
+        a,
+    );
+    h.run_steps(4);
+    h
+}
+
+/// The Defaults pane edits the default style itself: its "Save" adopts the style shown (the
+/// open document is untouched), and the pane's draft starts from the app's built-in sheet.
+#[test]
+fn the_defaults_pane_edits_and_adopts_a_style() {
+    let mut h = defaults_harness();
+    let doc_style = h.state().session.doc.styles.get("Normal").cloned();
+    // The editor was filled from the built-in default (not from the document's accident).
+    let draft = h.ctx.data(|d| d.get_temp::<StyleDraft>(style_draft_id())).expect("a style draft");
+    assert_eq!(draft.id, "Normal");
+    let builtin = draft_from_style(&wordcraft_doc::styles::StyleSheet::builtin(), "Normal").expect("built-in Normal");
+    assert_eq!((draft.font.clone(), draft.size, draft.color.clone()), (builtin.font, builtin.size, builtin.color));
+    // The styles section's "Set as Default" adopts it.
+    h.query_all_by_label("Set as Default").next().expect("styles Set as Default").click();
+    h.run_steps(3);
+    assert_eq!(h.state().session.defaults.style_ids(), ["Normal"]);
+    assert_eq!(h.state().session.doc.styles.get("Normal").cloned(), doc_style, "the open document is untouched");
+}
+
+/// "Import from Document" fills the editor with the document's style, without adopting it.
+#[test]
+fn importing_a_style_fills_the_editor_without_adopting_it() {
+    let mut h = defaults_harness();
+    h.state_mut().run("styles.modify", json!({"style": "Normal", "chr": {"font": "Georgia", "size": 15.0}})).unwrap();
+    h.run_steps(3);
+    h.query_all_by_label("Import from Document").next().expect("Import").click();
+    h.run_steps(3);
+    let draft = h.ctx.data(|d| d.get_temp::<StyleDraft>(style_draft_id())).expect("a style draft");
+    assert_eq!(draft.font, "Georgia", "the editor shows the document's definition");
+    assert_eq!(draft.size, 15.0);
+    assert!(h.state().session.defaults.is_empty(), "importing alone adopts nothing");
+}
+
+/// The page section adopts the values in its own controls, with no document involved.
+#[test]
+fn the_defaults_pane_adopts_the_page_setup_it_shows() {
+    let mut h = defaults_harness();
+    let (w0, m0) = (h.state().session.doc.last_section.page_w, h.state().session.doc.last_section.margin_top);
+    h.ctx.data_mut(|d| {
+        let page = d.get_temp_mut_or_insert_with(page_draft_id(), PageDraft::default_page);
+        page.paper = (8.27, 11.69);
+        page.top = 1.0;
+        page.bottom = 1.0;
+        page.left = 1.0;
+        page.right = 1.0;
+        page.color = "181818".into();
+    });
+    h.run_steps(2);
+    // The page section's "Set as Default" is the second one in the pane.
+    h.query_all_by_label("Set as Default").nth(1).expect("page Set as Default").click();
+    h.run_steps(3);
+    let page = h.state().session.defaults.page.expect("page defaults");
+    let ppu = crate::options::unit().pt_per_unit();
+    assert!((page.page_w - 8.27 * ppu).abs() < 0.1 && (page.page_h - 11.69 * ppu).abs() < 0.1, "{page:?}");
+    assert!((page.margin_top - 1.0 * ppu).abs() < 0.1);
+    // The pane shows what was stored, so the fields can't claim a value the model limited.
+    let shown = h.ctx.data(|d| d.get_temp::<PageDraft>(page_draft_id())).expect("the page draft");
+    assert!((shown.paper.0 - 8.27).abs() < 0.02 && (shown.paper.1 - 11.69).abs() < 0.02, "{shown:?}");
+    assert_eq!(page.page_color, Some(wordcraft_doc::Rgb(0x18, 0x18, 0x18)));
+    assert_eq!(
+        (h.state().session.doc.last_section.page_w, h.state().session.doc.last_section.margin_top),
+        (w0, m0),
+        "the open document is untouched"
+    );
+}
+
+/// "Import from Document" in the page section fills the editor with the open document's page
+/// setup, and adopting it is a separate, explicit step.
+#[test]
+fn importing_the_page_does_not_adopt_it() {
+    let mut h = defaults_harness();
+    h.state_mut()
+        .run(
+            "defaults.savePageValues",
+            json!({"pageW": 500.0, "pageH": 700.0, "marginTop": 30.0, "marginBottom": 30.0, "marginLeft": 30.0, "marginRight": 30.0}),
+        )
+        .unwrap();
+    // The document itself has another page setup.
+    h.state_mut().run("layout.size", json!({"width": 400.0, "height": 600.0})).unwrap();
+    h.run_steps(3);
+    // Import the page (the second "Import from Document" in the pane).
+    h.query_all_by_label("Import from Document").nth(1).expect("page Import").click();
+    h.run_steps(3);
+    let ppu = crate::options::unit().pt_per_unit();
+    let draft = h.ctx.data(|d| d.get_temp::<PageDraft>(page_draft_id())).expect("the page draft");
+    assert!((draft.paper.0 * ppu - 400.0).abs() < 0.5 && (draft.paper.1 * ppu - 600.0).abs() < 0.5, "{draft:?}");
+    // The defaults still hold what was adopted before the import, not the document's page.
+    let page = h.state().session.defaults.page.expect("page defaults");
+    assert!((page.page_w - 500.0).abs() < 0.1 && (page.page_h - 700.0).abs() < 0.1, "{page:?}");
+}
+
+#[test]
+fn review_language_picker_persists_and_applies() {
+    use egui_kittest::kittest::Queryable;
+    let mut a = app();
+    a.run("ui.language", json!({"value": "en"})).unwrap();
+    a.run("file.options", json!({"pane": "language"})).unwrap();
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).build_ui_state(
+        |ui, app: &mut crate::WordApp| {
+            let ctx = ui.ctx().clone();
+            app.logic(&ctx);
+            app.ui(ui);
+        },
+        a,
+    );
+    h.run_steps(4);
+    let combo_text =
+        |h: &egui_kittest::Harness<'static, crate::WordApp>| h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Review language:").value();
+    assert!(combo_text(&h).as_deref().is_some_and(|v| v.contains("Automatic")), "{:?}", combo_text(&h));
+    h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Review language:").click();
+    h.run_steps(3);
+    h.get_by_label("Portuguese (Brazil)").click();
+    h.run_steps(4);
+    assert_eq!(h.state().session.prefs.default_language.as_deref(), Some("pt-BR"));
+    assert_eq!(h.state().session.doc.styles.default_chr.lang.as_deref(), Some("pt-BR"), "applied to the document");
+    assert!(h.state().session.view.proofing && h.state().session.prefs.check_spelling);
+    assert_eq!(crate::ribbon::caret_language(h.state()), "Portuguese (Brazil)", "the status bar follows");
+    // Off turns the live check off and the dropdown (and the bar) say so.
+    h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Review language:").click();
+    h.run_steps(3);
+    h.get_by_label("Do not check spelling or grammar").click();
+    h.run_steps(4);
+    assert!(!h.state().session.view.proofing && !h.state().session.prefs.check_spelling);
+    assert_eq!(combo_text(&h).as_deref(), Some("Do not check spelling or grammar"));
 }

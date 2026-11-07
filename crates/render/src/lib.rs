@@ -24,7 +24,10 @@ pub use media::{decode_pixmap, decode_pixmap_fx, image_size, metafile_size};
 use media::{draw_page_picture, draw_vector, lock, pixmap_for, premul_pixmap, vector_for};
 
 mod color_glyph;
+mod emoji;
 pub mod icon_lib;
+
+pub use emoji::{EmojiImage, emoji_image};
 
 /// Worker threads for rasterising (0 on the web, where there are no threads).
 pub fn default_threads() -> u16 {
@@ -173,8 +176,9 @@ pub struct RenderOptions {
     pub read_paper: Option<Rgb>,
 }
 
-/// Default grey for a dark page's paper.
-pub const DARK_PAPER: u8 = 0x33;
+/// Default grey for a dark page's paper: `#181818`, the page the reference Writer document uses
+/// (WordCraft's dark page used to be a lighter `#333`).
+pub const DARK_PAPER: u8 = 0x18;
 
 /// Read Mode's Sepia paper: Word's RGB (112, 66, 20) at 80% transparency over white.
 pub const SEPIA_PAPER: Rgb = Rgb(0xE2, 0xD9, 0xD0);
@@ -277,7 +281,12 @@ pub fn render_page(doc: &Document, page: &Page, scale: f32, opts: &RenderOptions
     let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
     let w = ((page.w * scale).ceil() as u32).clamp(1, MAX_SIDE);
     let h = ((page.h.min(1e6) * scale).ceil() as u32).clamp(1, MAX_SIDE);
-    render_region(doc, page, w, h, Affine::scale(scale as f64), opts)
+    // A page taller than one raster may be (a 600 cm sheet at print scale) is drawn whole and
+    // smaller, not cropped at the cap; the on-screen canvas draws such pages in tiles at full
+    // resolution instead.
+    let fit = (w as f64 / (page.w as f64 * scale as f64)).min(h as f64 / (page.h.min(1e6) as f64 * scale as f64));
+    let view = Affine::scale(scale as f64 * fit.min(1.0));
+    render_region(doc, page, w, h, view, opts)
 }
 
 /// Render a page into a `w`×`h` raster with `view` (page points → pixels).

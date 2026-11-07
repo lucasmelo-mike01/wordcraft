@@ -498,7 +498,6 @@ struct CanvasView {
     area: Rect,
     hruler: Option<Rect>,
     vruler: Option<Rect>,
-    paper: Color32,
     animate: bool,
     opts: egui::InputOptions,
     geo: Geometry,
@@ -509,12 +508,6 @@ struct CanvasView {
 
 fn prepare_view(app: &mut WordApp, ui: &Ui, full: Rect, layout: &DocLayout) -> CanvasView {
     let read_mode = app.session.view.read_mode;
-    // The paper under each page, as the page raster draws it without a page color: the dark page
-    // of View › Switch Modes, or in Read Mode the Page color's white, sepia or dark paper.
-    let paper = {
-        let p = page_render_options(app, false).blank_paper();
-        Color32::from_rgb(p.0, p.1, p.2)
-    };
     let show_ruler = app.session.view.ruler
         && app.session.view.mode == wordcraft_layout::ViewMode::Print
         && !read_mode
@@ -582,7 +575,7 @@ fn prepare_view(app: &mut WordApp, ui: &Ui, full: Rect, layout: &DocLayout) -> C
     {
         app.session.page_hint = c.page;
     }
-    CanvasView { area, hruler, vruler, paper, animate, opts, geo, dim_body, grid_story, caret }
+    CanvasView { area, hruler, vruler, animate, opts, geo, dim_body, grid_story, caret }
 }
 
 fn update_caret_scroll(app: &mut WordApp, view: &CanvasView) -> Option<Rect> {
@@ -850,7 +843,6 @@ struct PagePaint<'a> {
     t: &'a Tokens,
     painter: &'a egui::Painter,
     dim_body: bool,
-    paper: Color32,
     hidden: Option<(usize, Pos)>,
     view: u64,
     content_origin: Pos2,
@@ -897,7 +889,7 @@ fn draw_page_gridlines(app: &WordApp, painter: &egui::Painter, t: &Tokens, page:
 }
 
 fn paint_pages(pass: PagePaint<'_>) -> PagePaintOutput {
-    let PagePaint { app, ui, layout, geo, t, painter, dim_body, paper, hidden, view, content_origin, ppp, max_tex, grid_story } = pass;
+    let PagePaint { app, ui, layout, geo, t, painter, dim_body, hidden, view, content_origin, ppp, max_tex, grid_story } = pass;
     let mut visible_tile_keys = HashSet::new();
     let mut rendered = 0;
     let mut rects = Vec::with_capacity(geo.rects.len());
@@ -958,9 +950,13 @@ fn paint_pages(pass: PagePaint<'_>) -> PagePaintOutput {
         let band = band_of(visual_sr);
         let painter =
             if band_top <= 0.0 && band_bot >= sr.height() { painter.clone() } else { painter.with_clip_rect(painter.clip_rect().intersect(band)) };
-        // Shadow and paper.
+        // Shadow and paper. The paper under the raster is the document's own page colour
+        // (through the dark page's inversion), so a custom colour doesn't flash white at the
+        // edges while a page or tile is re-rendered.
+        let paper_opts = page_render_options(app, dim_body);
+        let paper = paper_opts.ink(app.session.doc.settings.page_color.unwrap_or(paper_opts.paper));
         painter.rect_filled(visual_sr.translate(vec2(0.0, 2.0)).expand(1.5), 1.0, t.page_shadow);
-        painter.rect_filled(visual_sr, 0.0, paper);
+        painter.rect_filled(visual_sr, 0.0, crate::theme::c32(paper));
         if tiled {
             // Render before painting to keep the frame sharp immediately after an edit or
             // zoom. Tiles are fixed to raster-pixel boundaries, independent of scrolling.
@@ -1016,6 +1012,9 @@ fn paint_pages(pass: PagePaint<'_>) -> PagePaintOutput {
         } else if let Some((_, tex)) = app.canvas.textures.get(&i) {
             painter.image(tex.id(), visual_sr, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
         }
+        // The sheet's edge, drawn over the content: it is what tells a dark page from the
+        // workspace around it (#2572).
+        painter.rect_stroke(visual_sr, 0.0, Stroke::new(1.0, t.page_border), egui::StrokeKind::Inside);
         let page_scale = page_screen_scale(visual_sr, page, geo.scale);
         // Header/footer editing chrome.
         if let StoryRef::Part(id) = app.session.sel.focus.story {
@@ -1387,7 +1386,7 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
     let scroll_target = if hold_scroll_for_preview(app) { None } else { update_caret_scroll(app, &view) };
     let motion = scroll_motion(app, ui, full, &view);
     let scroll_area = configure_scroll_area(app, ui, &view, motion);
-    let CanvasView { area, hruler, vruler, paper, geo, dim_body, grid_story, caret, .. } = view;
+    let CanvasView { area, hruler, vruler, geo, dim_body, grid_story, caret, .. } = view;
     let mut origin = area.min;
     let mut ui_area = ui.new_child(egui::UiBuilder::new().max_rect(area));
     let mut ime_geometry: Option<(Rect, Rect)> = None;
@@ -1414,7 +1413,6 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
             t: &t,
             painter: &painter,
             dim_body,
-            paper,
             hidden,
             view: page_view,
             content_origin,

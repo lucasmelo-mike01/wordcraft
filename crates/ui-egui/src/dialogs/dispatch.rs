@@ -4,9 +4,9 @@ use super::find::{FindTab, SEARCH_SUGGESTIONS, command_matches, find_in_navigati
 use super::font::{apply_font, font_box, font_sample_box, font_sample_props, sample_paper};
 use super::forms::{cell_margins_dialog, custom_properties, table_properties};
 use super::mailings::{ADDRESS_PARTS, recipient_list, rule_params};
-use super::page_setup::{page_layout_commands, page_paper_group, page_valign_combo, page_valign_value, run_as_one_step};
+use super::page_setup::{page_color_group, page_layout_commands, page_paper_group, page_valign_combo, page_valign_value, run_as_one_step};
 use super::paragraph::{ParaNumber, apply_paragraph, para_check, para_number};
-use super::styles::manage_styles;
+use super::styles::{StyleFields, manage_styles, style_fields, style_params};
 use super::{Dialog, MeasureExt, Tokens, Ui, Value, WordApp, json, semibold, vec2};
 
 /// Returns true to close.
@@ -603,6 +603,8 @@ fn page_setup_dialog(app: &mut WordApp, ui: &mut Ui, d: &mut Dialog) -> bool {
         valign,
         odd_even,
         first_page,
+        page_color,
+        page_color_was,
     } = d
     else {
         return false;
@@ -630,6 +632,10 @@ fn page_setup_dialog(app: &mut WordApp, ui: &mut Ui, d: &mut Dialog) -> bool {
     ui.label(egui::RichText::new(tl!("Pages")).font(semibold(12.5)));
     ui.checkbox(mirror, tl!("Mirror margins"));
     page_paper_group(ui, paper, landscape, paper_custom);
+    ui.add_space(2.0);
+    ui.label(egui::RichText::new(tl!("Page Color")).font(semibold(12.5)));
+    page_color_group(ui, &app.session.doc.settings.theme_colors.clone(), page_color);
+    ui.add_space(2.0);
     ui.label(egui::RichText::new(tl!("Document Grid")).font(semibold(12.5)));
     ui.horizontal_wrapped(|ui| {
         ui.radio_value(&mut grid.0, 0, tl!("No grid"));
@@ -658,7 +664,30 @@ fn page_setup_dialog(app: &mut WordApp, ui: &mut Ui, d: &mut Dialog) -> bool {
     ui.label(egui::RichText::new(tl!("Headers and footers")).font(semibold(12.5)));
     ui.checkbox(odd_even, tl!("Different Odd & Even Pages"));
     ui.checkbox(first_page, tl!("Different First Page"));
+    // Word's Page Setup "Set As Default": the values shown here become the starting point
+    // of new documents; this document is left as it is.
+    ui.horizontal(|ui| {
+        if ui.button(tl!("Set as Default")).clicked() {
+            let ppu = crate::options::unit().pt_per_unit();
+            let values = json!({
+                "pageW": paper.0 * ppu,
+                "pageH": paper.1 * ppu,
+                "landscape": *landscape,
+                "marginTop": *top * ppu,
+                "marginBottom": *bottom * ppu,
+                "marginLeft": *left * ppu,
+                "marginRight": *right * ppu,
+                "mirror": *mirror,
+                "color": wordcraft_doc::Rgb::parse(page_color).map(|c| c.hex()),
+            });
+            if app.run("defaults.savePageValues", values).is_ok() {
+                app.status(tl!("Saved"));
+            }
+        }
+    });
+    let color_ok = page_color.trim().is_empty() || wordcraft_doc::Rgb::parse(page_color).is_some();
     let (mut ok, cancel) = buttons(ui, tl!("OK"));
+    ok &= color_ok;
     if ok {
         // Everything OK changes is one undo step; a refused command applies nothing.
         let result = page_layout_commands(app, (*paper, *paper_was), *landscape, (*top, *bottom, *left, *right))
@@ -690,6 +719,10 @@ fn page_setup_dialog(app: &mut WordApp, ui: &mut Ui, d: &mut Dialog) -> bool {
                 }
                 if *first_page != wordcraft_engine::cmd::page::sect(&app.session).title_page {
                     commands.push(("layout.differentFirstPage", json!({"value": *first_page})));
+                }
+                if page_color != page_color_was {
+                    let c = wordcraft_doc::Rgb::parse(page_color).map(|c| c.hex());
+                    commands.push(("design.pageColor", json!({"color": c})));
                 }
                 run_as_one_step(app, commands)
             });
@@ -974,65 +1007,33 @@ fn modify_style_dialog(app: &mut WordApp, ui: &mut Ui, d: &mut Dialog) -> bool {
     let Dialog::ModifyStyle { back, resume, id, name, font, size, bold, italic, color, before, after } = d else {
         return false;
     };
-    crate::rtl::Table::new("ms").columns(2).show(ui, |t| {
-        t.row(|r| {
-            let name_label = r.cell(|ui| ui.label(tl!("Name:")));
-            r.cell(|ui| ui.text_edit_singleline(name).labelled_by(name_label.id));
-        });
-        t.row(|r| {
-            r.cell(|ui| ui.label(tl!("Font:")));
-            r.cell(|ui| {
-                let shown = app.previews.font_shown(font);
-                let fams = app.previews.families();
-                let prev = app.previews.font_preview_fn();
-                if let Some(f) = crate::widgets::font_combo(ui, "ms_font", 220.0, &shown, &fams, Some(&*prev)) {
-                    if f == crate::widgets::ADD_FONT {
-                        let _ = app.run("font.add", json!({}));
-                    } else {
-                        *font = app.previews.font_stored(&f);
-                    }
-                }
-            });
-        });
-        t.row(|r| {
-            let size_label = r.cell(|ui| ui.label(tl!("Size:")));
-            r.cell(|ui| ui.add(egui::DragValue::new(size).range(1.0..=1638.0).speed(0.5)).labelled_by(size_label.id));
-        });
-        t.row(|r| {
-            let color_label = r.cell(|ui| ui.label(tl!("Color:")));
-            r.cell(|ui| ui.text_edit_singleline(color).labelled_by(color_label.id));
-        });
-        t.row(|r| {
-            r.cell(|ui| ui.label(tl!("Space before/after:")));
-            r.cell(|ui| {
-                ui.horizontal(|ui| {
-                    ui.add(egui::DragValue::new(before).range(0.0..=1584.0)).accessible_name(tl!("Space before"));
-                    ui.add(egui::DragValue::new(after).range(0.0..=1584.0)).accessible_name(tl!("Space after"));
-                });
-            });
-        });
-    });
+    style_fields(app, ui, StyleFields { name, font, size, bold, italic, color, before, after }, true, None);
+    // Word's "New documents based on this template": adopts this style definition for future
+    // blank documents, saved in `ui.json` and previewed by File › Options › Defaults.
+    let mut adopted = false;
     ui.horizontal(|ui| {
-        ui.checkbox(bold, tl!("Bold"));
-        ui.checkbox(italic, tl!("Italic"));
+        if ui.button(tl!("Set as Default in the App")).clicked() {
+            let params = style_params(id, name, font, *size, *bold, *italic, color, *before, *after);
+            if app.run("defaults.saveStyle", params).is_ok() {
+                app.status(tl!("Saved"));
+                adopted = true;
+            }
+        }
     });
     let (ok, cancel) = buttons(ui, tl!("OK"));
     if ok {
-        let mut chr = json!({"font": font, "size": *size, "bold": *bold, "italic": *italic});
-        if let Some(c) = wordcraft_doc::Rgb::parse(color) {
-            chr["color"] = json!({"Rgb": [c.0, c.1, c.2]});
-        }
-        let _ = app.run("styles.modify", json!({"style": id, "name": name, "chr": chr, "para": {"spaceBefore": *before, "spaceAfter": *after}}));
+        let params = style_params(id, name, font, *size, *bold, *italic, color, *before, *after);
+        let _ = app.run("styles.modify", params);
     }
-    if (ok || cancel) && *back {
+    if (ok || cancel || adopted) && *back {
         app.dialog = Some(Dialog::ManageStyles { alphabetical: false, selected: id.clone() });
     }
-    if (ok || cancel)
+    if (ok || cancel || adopted)
         && let Some(r) = resume.take()
     {
         app.dialog = Some(*r);
     }
-    ok || cancel
+    ok || cancel || adopted
 }
 
 fn table_style_dialog(app: &mut WordApp, ui: &mut Ui, d: &mut Dialog) -> bool {
@@ -1113,6 +1114,7 @@ fn paste_special_dialog(app: &mut WordApp, ui: &mut Ui, d: &mut Dialog) -> bool 
         ui.label(egui::RichText::new(tl!("Result")).font(semibold(12.5)));
         let hint = match f.as_str() {
             "formatted" => "Keeps the fonts and formatting of the copied text.",
+            "markdown" => "Reads Markdown and gives the document its headings, lists, tables and emphasis.",
             "rtf" => "Reads the clipboard's rich text and keeps its formatting.",
             "html" => "Reads the clipboard's web content and keeps its formatting.",
             "picture" => "Pastes the clipboard's picture.",

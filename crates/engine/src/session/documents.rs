@@ -196,6 +196,8 @@ impl Session {
             doc: _,
             sel: _,
             view: _,
+            // App preferences for future documents, shared by every open document.
+            defaults: _,
             pending: _,
             path: _,
             file_name: _,
@@ -468,6 +470,10 @@ impl Session {
     }
 
     fn add(&mut self, mut doc: Document, untitled: u32) -> u64 {
+        // A document opened beside another (or a new one) adopts the app's proofing language when
+        // it names none of its own; see `adopt_default_language`.
+        let tag = self.prefs.default_language.clone().or_else(|| self.editing_lang.clone());
+        super::adopt_default_language(&mut doc, tag.as_deref());
         doc.ensure_nonempty();
         let mut view = self.view.clone();
         view.outline.collapsed.clear();

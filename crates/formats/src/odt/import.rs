@@ -354,6 +354,31 @@ fn apply_look(doc: &mut Document, kind: model::Kind, look: &super::styles::ParaL
     if look.contextual.is_some() {
         p.contextual_spacing = look.contextual;
     }
+    // Headings and Title follow the LibreOffice Writer reference document and WordCraft 0.10/026
+    // visual parity (see `StyleSheet::builtin` and `REFERENCE_SERIF_FONT`): bold, the reference's
+    // own fonts (Liberation Serif / Google Sans), sizes and spacing, and the automatic text colour
+    // — white on its dark page and black on a light one.
+    // The generic LibreOffice heading blue (#0F4761 / HEADING_BLUE) must not override the automatic colour.
+    match kind {
+        model::Kind::Heading(n) => {
+            if n <= 3 || st.chr.color == Some(wordcraft_doc::props::TextColor::Rgb(wordcraft_doc::styles::HEADING_BLUE)) {
+                st.chr.color = None;
+            }
+            if st.chr.bold.is_none() && n <= 3 {
+                st.chr.bold = Some(true);
+            }
+            if st.chr.font.is_none() && n <= 3 {
+                st.chr.font = match n {
+                    2 => Some(wordcraft_doc::styles::REFERENCE_SANS_FONT.into()),
+                    _ => Some(wordcraft_doc::styles::REFERENCE_SERIF_FONT.into()),
+                };
+            }
+        }
+        model::Kind::Title if st.chr.color == Some(wordcraft_doc::props::TextColor::Rgb(wordcraft_doc::styles::HEADING_BLUE)) => {
+            st.chr.color = None;
+        }
+        _ => {}
+    }
 }
 
 /// Number the headings as the outline style `levels` does (ODF 1.3 §16.34): one list whose
@@ -932,6 +957,11 @@ pub fn import_on(bytes: &[u8], page: &SectionProps) -> Result<Document, String> 
     }
     Arc::make_mut(&mut doc.styles).default_chr.kern = kern.then_some(1.0);
     Arc::make_mut(&mut doc.styles).default_chr.overlay(&scripts);
+    // ODT's text language is not read yet (a known limit of this importer): don't let the built-in
+    // sheet's `en-US` look like the file's own language, or a Portuguese document would be
+    // proofed as English. With no language the app's proofing default applies (see
+    // `Session`/`adopt_default_language`).
+    Arc::make_mut(&mut doc.styles).default_chr.lang = None;
     if let Some(t) = default_tab {
         doc.settings.default_tab = t;
     }
@@ -1298,9 +1328,9 @@ pub(super) fn apply_page_layout(xml: &[u8], sec: &mut SectionProps) {
 /// A `style:page-layout-properties` element's page size, orientation and margins into `sec`.
 fn apply_layout(a: &Attrs, sec: &mut SectionProps) {
     let len = |k: &str| get(a, k).and_then(length).filter(|v| *v >= 0.0);
-    // Like the DOCX reader: a page is at least half an inch; at most 22 inches (Word's limit), so a hostile
-    // `1e30pt` can't reach layout.
-    let page = |k: &str| len(k).filter(|v| *v >= 36.0).map(|v| v.min(1584.0));
+    // Like the DOCX reader: a page is at least half an inch; at most 600 cm (LibreOffice's limit),
+    // so a hostile `1e30pt` can't reach layout but a Writer page of 600 cm still opens.
+    let page = |k: &str| len(k).filter(|v| *v >= 36.0).map(|v| v.min(wordcraft_doc::section::MAX_PAGE_SIDE));
     if let (Some(w), Some(h)) = (page("fo:page-width"), page("fo:page-height")) {
         sec.page_w = w;
         sec.page_h = h;

@@ -1,4 +1,131 @@
+use wordcraft_doc::Rgb;
+
 use super::*;
+
+/// A 600 cm page (LibreOffice's custom size) survives ODT: the reader used to clamp pages to
+/// 22 inches (55.88 cm), which truncated the Writer document.
+#[test]
+fn a_six_hundred_centimetre_page_survives_odt() {
+    let cm = 72.0 / 2.54;
+    let mut d = Document::new();
+    d.ensure_nonempty();
+    d.last_section.page_w = cm * 19.0;
+    d.last_section.page_h = cm * 600.0;
+    let back = super::import(&super::export(&d).unwrap()).unwrap();
+    assert!((back.last_section.page_h - cm * 600.0).abs() < 0.5, "{}", back.last_section.page_h);
+    assert!((back.last_section.page_w - cm * 19.0).abs() < 0.5);
+}
+
+/// An ODT that names no language does not inherit the built-in sheet's en-US, so the app's
+/// proofing default (pt-BR on a Portuguese interface) applies instead of English.
+#[test]
+fn imported_odt_has_no_default_language_of_its_own() {
+    let mut d = Document::new();
+    d.ensure_nonempty();
+    let back = super::import(&super::export(&d).unwrap()).unwrap();
+    assert_eq!(back.styles.default_chr.lang, None, "the file names no language");
+}
+
+/// Heading 1–3 imported from an ODT with LibreOffice's default heading color (#0F4761)
+/// preserve the automatic text colour (None) and reference fonts/weights, so they render
+/// pure white on a dark page and black on a light page.
+#[test]
+fn headings_with_default_heading_blue_retain_automatic_color() {
+    let xml = r##"<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+        xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+        xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0"
+        xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0">
+        <office:body><office:text>
+            <text:h text:outline-level="1">Heading One</text:h>
+            <text:h text:outline-level="2">Heading Two</text:h>
+        </office:text></office:body>
+    </office:document-content>"##;
+    let styles = r##"<office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+        xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0"
+        xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0">
+        <office:styles>
+            <style:style style:name="Heading" style:family="paragraph">
+                <style:text-properties fo:color="#0f4761"/>
+            </style:style>
+            <style:style style:name="Heading_20_1" style:display-name="Heading 1" style:family="paragraph" style:parent-style-name="Heading">
+                <style:text-properties fo:font-size="20pt"/>
+            </style:style>
+            <style:style style:name="Heading_20_2" style:display-name="Heading 2" style:family="paragraph" style:parent-style-name="Heading">
+                <style:text-properties fo:font-size="16pt"/>
+            </style:style>
+        </office:styles>
+    </office:document-styles>"##;
+    let mut zip_buf = Vec::new();
+    {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut zip_buf));
+        zip.start_file("mimetype", zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored)).unwrap();
+        std::io::Write::write_all(&mut zip, b"application/vnd.oasis.opendocument.text").unwrap();
+        zip.start_file("content.xml", zip::write::SimpleFileOptions::default()).unwrap();
+        std::io::Write::write_all(&mut zip, xml.as_bytes()).unwrap();
+        zip.start_file("styles.xml", zip::write::SimpleFileOptions::default()).unwrap();
+        std::io::Write::write_all(&mut zip, styles.as_bytes()).unwrap();
+        zip.finish().unwrap();
+    }
+    let doc = super::import(&zip_buf).unwrap();
+    let h1 = doc.styles.get("Heading1").expect("Heading1 style");
+    assert_eq!(h1.chr.color, None, "Heading 1 keeps automatic colour");
+    assert_eq!(h1.chr.size, Some(20.0));
+    assert_eq!(h1.chr.font.as_deref(), Some(wordcraft_doc::styles::REFERENCE_SERIF_FONT));
+    assert_eq!(h1.chr.bold, Some(true));
+
+    let h2 = doc.styles.get("Heading2").expect("Heading2 style");
+    assert_eq!(h2.chr.color, None, "Heading 2 keeps automatic colour");
+    assert_eq!(h2.chr.size, Some(16.0));
+    assert_eq!(h2.chr.font.as_deref(), Some(wordcraft_doc::styles::REFERENCE_SANS_FONT));
+    assert_eq!(h2.chr.bold, Some(true));
+}
+
+#[test]
+fn font_family_with_trailing_digits_is_normalized_to_base_font() {
+    let xml = r##"<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+        xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+        xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0"
+        xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0">
+        <office:automatic-styles>
+            <style:style style:name="T1" style:family="text">
+                <style:text-properties fo:font-family="'Google Sans1'"/>
+            </style:style>
+        </office:automatic-styles>
+        <office:body><office:text>
+            <text:p><text:span text:style-name="T1">Test text</text:span></text:p>
+        </office:text></office:body>
+    </office:document-content>"##;
+    let mut zip_buf = Vec::new();
+    {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut zip_buf));
+        zip.start_file("mimetype", zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored)).unwrap();
+        std::io::Write::write_all(&mut zip, b"application/vnd.oasis.opendocument.text").unwrap();
+        zip.start_file("content.xml", zip::write::SimpleFileOptions::default()).unwrap();
+        std::io::Write::write_all(&mut zip, xml.as_bytes()).unwrap();
+        zip.finish().unwrap();
+    }
+    let doc = super::import(&zip_buf).unwrap();
+    let p = doc.body.first().and_then(|b| b.as_para()).expect("para");
+    let span = p.runs.first().expect("run");
+    assert_eq!(span.props.font.as_deref(), Some("Google Sans"));
+}
+
+/// The page background (`fo:background-color` of the page layout) is a document setting, as in
+/// the DOCX reader: the reference Writer document has `#181818`, and WordCraft keeps it.
+#[test]
+fn a_page_background_survives_a_round_trip() {
+    let mut d = Document::new();
+    d.ensure_nonempty();
+    d.settings.page_color = Some(Rgb(0x18, 0x18, 0x18));
+    let bytes = super::export(&d).unwrap();
+    let back = super::import(&bytes).unwrap();
+    assert_eq!(back.settings.page_color, Some(Rgb(0x18, 0x18, 0x18)));
+
+    let mut plain = Document::new();
+    plain.ensure_nonempty();
+    let plain = super::import(&super::export(&plain).unwrap()).unwrap();
+    assert_eq!(plain.settings.page_color, None, "no background, none in the file");
+}
 
 #[test]
 fn escaper_drops_noncharacters() {
@@ -314,11 +441,13 @@ fn hostile_page_layout_values_are_clamped() {
                 </office:document-styles>"#
         )
     };
-    // Huge values: the page is capped at 22 inches and margins at the page's longer side.
+    // Huge values: the page is capped at 600 cm (LibreOffice's limit) and margins at the
+    // page's longer side.
+    let max = wordcraft_doc::section::MAX_PAGE_SIDE;
     let mut sec = wordcraft_doc::SectionProps::default();
     apply_page_layout(styles("1e30pt", "1e30in", "1e30pt").as_bytes(), &mut sec);
-    assert_eq!((sec.page_w, sec.page_h), (1584.0, 1584.0));
-    assert_eq!((sec.margin_top, sec.margin_left), (1584.0, 1584.0));
+    assert_eq!((sec.page_w, sec.page_h), (max, max));
+    assert_eq!((sec.margin_top, sec.margin_left), (max, max));
     // Negative, zero, tiny and non-numeric values leave the defaults alone: the default page, and
     // XSL's margins (0).
     let def = wordcraft_doc::SectionProps { margin_top: 0.0, margin_right: 0.0, ..Default::default() };

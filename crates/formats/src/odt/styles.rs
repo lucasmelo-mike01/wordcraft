@@ -778,6 +778,15 @@ fn family_of<'a>(a: &'a Attrs, faces: &'a HashMap<String, String>) -> Option<&'a
 fn default_font(a: &Attrs, faces: &HashMap<String, String>) -> Option<String> {
     let family = family_of(a, faces)?;
     let family = family.split(',').next().unwrap_or("").trim().trim_matches(['\'', '"']);
+    let base = family.trim_end_matches(|c: char| c.is_ascii_digit()).trim_end();
+    let family = if !base.is_empty()
+        && base.len() < family.len()
+        && (faces.values().any(|f| f.eq_ignore_ascii_case(base)) || base.eq_ignore_ascii_case("Google Sans"))
+    {
+        base
+    } else {
+        family
+    };
     (!family.is_empty() && !model::is_mono(family)).then(|| family.to_string())
 }
 
@@ -836,7 +845,17 @@ fn text_properties(a: &Attrs, style: &mut StyleInfo, faces: &HashMap<String, Str
         fmt.size = Some(size);
     }
     if let Some(family) = family_of(a, faces) {
-        let family = family.split(',').next().unwrap_or("").trim().trim_matches(['\'', '"']).to_string();
+        let mut family = family.split(',').next().unwrap_or("").trim().trim_matches(['\'', '"']).to_string();
+        let base = family.trim_end_matches(|c: char| c.is_ascii_digit()).trim_end();
+        if !base.is_empty()
+            && base.len() < family.len()
+            && (faces.values().any(|f| f.eq_ignore_ascii_case(base))
+                || base.eq_ignore_ascii_case("Google Sans")
+                || base.eq_ignore_ascii_case("Liberation Sans")
+                || base.eq_ignore_ascii_case("Liberation Serif"))
+        {
+            family = base.to_string();
+        }
         // A monospaced font keeps its name (it is not "code" here, which would be Courier New).
         if !family.is_empty() {
             fmt.font = model::kept_font(&family);

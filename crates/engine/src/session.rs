@@ -49,6 +49,9 @@ pub struct Session {
     pub doc: Document,
     pub sel: Selection,
     pub view: ViewState,
+    /// Defaults for new documents (File › Options › Defaults): the styles and page setup the
+    /// person adopted. Persisted by the host in `ui.json`; applied only to blank documents.
+    pub defaults: wordcraft_doc::defaults::DocumentDefaults,
     /// Formatting picked with a collapsed caret, applied to the next typed text.
     pub pending: Option<CharProps>,
     /// Last highlighter choice for the shortcut; palette state, outside document undo.
@@ -246,4 +249,15 @@ pub struct Session {
 impl Session {
     /// File name of the persisted custom dictionary inside the settings folder.
     pub const USER_DICT_FILE: &str = "custom-dictionary.txt";
+}
+
+/// A document that names no default text language of its own adopts `tag`, so text without a
+/// language is checked (and shown in the status bar) in the app's language instead of English.
+/// A document that carries a language — from its own styles — is left as it is.
+pub(crate) fn adopt_default_language(doc: &mut Document, tag: Option<&str>) {
+    let Some(tag) = tag else { return };
+    let named = doc.styles.resolve_char(None, &wordcraft_doc::props::CharProps::default()).lang.is_some();
+    if !named {
+        std::sync::Arc::make_mut(&mut doc.styles).default_chr.lang = Some(tag.to_string());
+    }
 }

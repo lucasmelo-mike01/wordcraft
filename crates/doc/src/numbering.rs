@@ -169,9 +169,9 @@ fn bullet_level(i: usize, c: char) -> Level {
         hanging: 18.0,
         chr: CharProps {
             font: match c {
-                '•' | '▪' | '○' => Some("Arial".into()),
+                '•' | '▪' | '○' | '◦' | '▫' => Some("Arial".into()),
                 // Plain text characters (a dash bullet) use the paragraph's font.
-                c if c.is_ascii() || c == '–' => None,
+                c if c.is_ascii() || c == '–' || c == '—' => None,
                 _ => Some("Segoe UI Symbol".into()),
             },
             ..CharProps::default()
@@ -732,6 +732,14 @@ mod tests {
         let b = n.add_list(ListKind::Bullet);
         assert_eq!(c.next_label(&n, b, 0).unwrap().0, "•");
         assert_eq!(n.find_kind(ListKind::Bullet), Some(b));
+    }
+
+    #[test]
+    fn white_bullet_and_square_use_arial_font() {
+        let lv_circle = levels_for(ListKind::BulletChar('◦'));
+        assert_eq!(lv_circle[0].chr.font.as_deref(), Some("Arial"));
+        let lv_square = levels_for(ListKind::BulletChar('▫'));
+        assert_eq!(lv_square[0].chr.font.as_deref(), Some("Arial"));
     }
 
     #[test]
